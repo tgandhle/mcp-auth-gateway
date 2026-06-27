@@ -128,3 +128,64 @@ def test_upstream_down_502(monkeypatch, jwks, rsa_key):
     token = mint(rsa_key, scope="mcp:read")
     r = c.post("/mcp", content=_rpc("tools/list"), headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 502
+
+
+@respx.mock
+def test_batch_rejected_not_forwarded(monkeypatch, jwks, rsa_key):
+    # A batch containing tools/call must be refused, not proxied, even with a
+    # valid token. This is the authorization-bypass case the review flagged.
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read")  # not even invoke scope
+    batch = json.dumps([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {}},
+    ]).encode()
+    r = c.post("/mcp", content=batch, headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "batch_not_supported"
+    assert not route.called  # never reached upstream
+
+
+@respx.mock
+def test_malformed_json_rejected_not_forwarded(monkeypatch, jwks, rsa_key):
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read")
+    r = c.post("/mcp", content=b"{not valid json", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_json"
+    assert not route.called
+
+
+@respx.mock
+def test_object_without_method_rejected(monkeypatch, jwks, rsa_key):
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read")
+    r = c.post("/mcp", content=b'{"jsonrpc":"2.0","id":1}', headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_jsonrpc"
+    assert not route.called
+
+
+@respx.mock
+def test_inbound_identity_header_stripped(monkeypatch, jwks, rsa_key):
+    # A client that sets X-Forwarded-Sub itself must not have it reach upstream;
+    # the gateway overwrites it with the verified subject.
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read", sub="real-user")
+    r = c.post(
+        "/mcp",
+        content=_rpc("tools/list"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Forwarded-Sub": "admin-spoof",
+            "X-User-Id": "spoof-2",
+        },
+    )
+    assert r.status_code == 200
+    sent = route.calls.last.request
+    assert sent.headers.get("X-Forwarded-Sub") == "real-user"
+    assert "x-user-id" not in {k.lower() for k in sent.headers}

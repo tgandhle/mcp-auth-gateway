@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     issuer: str
     # Audience claim we require (aud). Usually this gateway's own resource id.
     audience: str
-    # JWKS endpoint. If omitted, derived from issuer via RFC 8414 discovery.
+    # JWKS endpoint of the authorization server. Required when auth is enabled.
     jwks_url: Optional[HttpUrl] = None
     # Allowed signing algorithms. RS256/ES256 only by default; never "none".
     allowed_algorithms: list[str] = Field(default_factory=lambda: ["RS256", "ES256"])

@@ -18,6 +18,7 @@ where to get a token.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -33,6 +34,21 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
 }
+
+# Inbound headers a client could set to forge identity. Stripped before the
+# gateway injects its own verified values, so they can never be trusted from
+# the client side. Lowercased for case-insensitive matching.
+_SPOOFABLE_IDENTITY_HEADERS = {
+    "x-forwarded-sub", "x-forwarded-scopes", "x-user", "x-user-id",
+    "x-principal", "x-authenticated-user", "x-forwarded-user",
+}
+
+
+@dataclass
+class JsonRpcParse:
+    method: str | None = None
+    error: str | None = None
+    error_code: str = "invalid_jsonrpc"
 
 
 def _bearer_token(request: Request) -> str:
@@ -111,18 +127,29 @@ def create_app(
             except TokenError as exc:
                 return _unauthorized(settings, str(exc))
 
-        # 2. Parse the JSON-RPC method and enforce scope.
+        # 2. Parse the JSON-RPC request and enforce scope. This path fails
+        #    closed: anything we cannot resolve to a single authorized method
+        #    is rejected, never forwarded. Batches are rejected outright
+        #    because per-item authorization is not implemented; forwarding a
+        #    batch would let a caller smuggle a method past the scope check.
         held = verified.scopes if verified else frozenset()
-        method = _extract_method(raw)
-        if method is not None:
-            decision = policy.check(method, held)
-            if not decision.allowed:
-                return _forbidden(decision.reason, sorted(decision.required))
+        parsed = _parse_jsonrpc(raw)
+        if parsed.error is not None:
+            return JSONResponse(status_code=400, content={"error": parsed.error_code, "detail": parsed.error})
+        # parsed.method is guaranteed non-None when error is None.
+        decision = policy.check(parsed.method, held)  # type: ignore[arg-type]
+        if not decision.allowed:
+            return _forbidden(decision.reason, sorted(decision.required))
 
         # 3. Reverse-proxy to upstream, forwarding safe headers and identity.
+        #    Strip every inbound identity-bearing header before injecting our
+        #    own, so a client can't spoof identity by setting X-Forwarded-Sub
+        #    (critical if auth is ever disabled in front of a trusting upstream).
         fwd_headers = {
             k: v for k, v in request.headers.items()
-            if k.lower() not in _HOP_BY_HOP and k.lower() != "authorization"
+            if k.lower() not in _HOP_BY_HOP
+            and k.lower() != "authorization"
+            and k.lower() not in _SPOOFABLE_IDENTITY_HEADERS
         }
         if verified is not None:
             # Pass verified identity to upstream out-of-band. Upstream should
@@ -156,17 +183,34 @@ def create_app(
     return app
 
 
-def _extract_method(raw: bytes) -> str | None:
-    """Pull the JSON-RPC ``method`` out of a request body. Returns None if the
-    body isn't a single JSON-RPC object we can read a method from (e.g. a
-    batch or non-JSON), in which case scope enforcement is skipped and the
-    request is still authenticated. Batches are conservatively not method-scoped
-    here; enforce per-method batching upstream or reject batches if needed."""
+def _parse_jsonrpc(raw: bytes) -> "JsonRpcParse":
+    """Strictly parse a single JSON-RPC request and resolve its method.
+
+    Fails closed. Returns an error (which the caller turns into a 400) for:
+      - malformed / non-JSON bodies
+      - JSON-RPC batches (arrays): per-item authz is not implemented, so we
+        refuse rather than forward a request whose methods we haven't checked
+      - JSON that isn't an object
+      - objects missing a string ``method``
+
+    Only a well-formed single request with a string method returns a method
+    for the scope policy to evaluate.
+    """
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if isinstance(data, dict):
-        m = data.get("method")
-        return m if isinstance(m, str) else None
-    return None
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return JsonRpcParse(error="request body is not valid JSON", error_code="invalid_json")
+
+    if isinstance(data, list):
+        return JsonRpcParse(
+            error="JSON-RPC batch requests are not supported; send one request per call",
+            error_code="batch_not_supported",
+        )
+    if not isinstance(data, dict):
+        return JsonRpcParse(error="JSON-RPC request must be an object", error_code="invalid_jsonrpc")
+
+    method = data.get("method")
+    if not isinstance(method, str) or not method:
+        return JsonRpcParse(error="JSON-RPC request missing a string 'method'", error_code="invalid_jsonrpc")
+
+    return JsonRpcParse(method=method)

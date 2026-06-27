@@ -12,7 +12,7 @@ point your MCP clients at the gateway, point the gateway at the server.
 
 - **Token verification.** Validates inbound bearer JWTs against a JWKS
   (RFC 7517) published by your authorization server. Enforces `iss`, `aud`,
-  `exp`, `nbf`, `iat`. Pins acceptable signing algorithms to asymmetric only
+  `exp`, `iat` (and `nbf` when present). Pins acceptable signing algorithms to asymmetric only
   (RS/ES/PS); `none` and HMAC algs are refused at construction time, which
   closes the algorithm-confusion class of bypass.
 - **Key rotation.** Selects the verification key by the token's `kid`. On a
@@ -99,11 +99,16 @@ cannot invoke a tool).
 
 ## Status and limits
 
-- JSON-RPC batch requests are authenticated but not per-method scope-checked;
-  enforce batching policy upstream or reject batches if your threat model needs
-  it.
+- JSON-RPC batch requests (arrays) are rejected with `400 batch_not_supported`,
+  because per-item authorization is not implemented and forwarding an
+  unchecked batch would let a caller smuggle a method past the scope check.
+  Malformed JSON and JSON-RPC objects without a string `method` are likewise
+  rejected with `400` rather than proxied. The authorization path fails closed.
 - Streaming (SSE) MCP responses are proxied as the upstream returns them; this
   build buffers the response body. Streaming pass-through is a known next step.
+- The protected-resource metadata URL is currently derived from the bind
+  host/port. Behind TLS or a load balancer, set an explicit public base URL
+  (planned `GATEWAY_PUBLIC_BASE_URL`) so the `WWW-Authenticate` hint is correct.
 
 ## License
 
