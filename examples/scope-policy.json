@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "initialize": [],
+    "ping": [],
+    "tools/list": ["mcp:read"],
+    "tools/call": ["mcp:invoke"],
+    "resources/": ["mcp:read"],
+    "prompts/": ["mcp:read"],
+    "completion/complete": ["mcp:invoke"]
+  },
+  "default": [],
+  "deny_by_default": true
+}

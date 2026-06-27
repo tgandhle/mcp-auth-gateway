@@ -1,0 +1,110 @@
+# MCP Auth Gateway
+
+An OAuth 2.1 / JWT-enforcing reverse proxy that sits in front of a Model
+Context Protocol (MCP) server. It authenticates inbound requests, enforces
+per-method scopes, and forwards verified identity to the upstream MCP server.
+
+The MCP transport is JSON-RPC 2.0 over HTTP. MCP servers themselves usually do
+no authorization. This gateway adds that layer without modifying the server:
+point your MCP clients at the gateway, point the gateway at the server.
+
+## What it does
+
+- **Token verification.** Validates inbound bearer JWTs against a JWKS
+  (RFC 7517) published by your authorization server. Enforces `iss`, `aud`,
+  `exp`, `nbf`, `iat`. Pins acceptable signing algorithms to asymmetric only
+  (RS/ES/PS); `none` and HMAC algs are refused at construction time, which
+  closes the algorithm-confusion class of bypass.
+- **Key rotation.** Selects the verification key by the token's `kid`. On a
+  `kid` miss it force-refreshes the JWKS once before failing closed.
+- **Per-method scope enforcement.** MCP methods (`tools/call`, `tools/list`,
+  `resources/read`, ...) are mapped to required scopes by a policy. Read vs.
+  invoke is separated by default. Unknown methods are denied by default.
+- **Protected-resource metadata.** Serves RFC 9728
+  `/.well-known/oauth-protected-resource` so spec-compliant MCP clients can
+  discover which authorization server guards this resource. 401 responses
+  carry a `WWW-Authenticate` header pointing at it.
+- **Identity forwarding.** Strips the inbound `Authorization` header before
+  proxying and passes verified `sub` / scopes to the upstream via
+  `X-Forwarded-Sub` / `X-Forwarded-Scopes`. The upstream trusts these only
+  because it sits behind this gateway on a private network.
+- **PKCE helper.** RFC 7636 verifier/challenge generation and authorization-URL
+  building, for clients that need to acquire tokens.
+
+## Why these choices
+
+The gateway verifies tokens; it does not issue them. In an enterprise setup an
+IdP (PingFederate, Entra, Auth0, Okta) runs the authorization-code + PKCE flow
+and issues the JWT. The gateway's job is the resource-server half of OAuth:
+verify the token and enforce scope. That separation is deliberate and matches
+how this is deployed in practice.
+
+## Configuration
+
+All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `GATEWAY_UPSTREAM_URL` | yes | Backend MCP server URL, e.g. `http://127.0.0.1:9000/mcp` |
+| `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
+| `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
+| `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
+| `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
+| `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
+| `GATEWAY_REQUIRE_AUTH` | no | Default `true`; set `false` only for local dev |
+| `GATEWAY_HOST` / `GATEWAY_PORT` | no | Default `127.0.0.1:8080` |
+
+## Run
+
+```bash
+pip install -e ".[dev]"
+
+export GATEWAY_UPSTREAM_URL=http://127.0.0.1:9000/mcp
+export GATEWAY_ISSUER=https://login.example.com/
+export GATEWAY_AUDIENCE=mcp-gateway
+export GATEWAY_JWKS_URL=https://login.example.com/.well-known/jwks.json
+
+mcp-gateway
+```
+
+## Scope policy file format
+
+```json
+{
+  "rules": {
+    "initialize": [],
+    "tools/list": ["mcp:read"],
+    "tools/call": ["mcp:invoke"],
+    "resources/": ["mcp:read"]
+  },
+  "default": [],
+  "deny_by_default": true
+}
+```
+
+A key ending in `/` is a prefix rule covering every method beneath it. An exact
+method rule overrides a prefix rule. All scopes listed for a rule are required
+(AND).
+
+## Tests
+
+```bash
+pytest
+```
+
+Tests sign real RS256 JWTs with a generated RSA key and exercise the verifier,
+the scope policy, the PKCE helper, and the full proxy path (including that the
+`Authorization` header is not forwarded upstream and that a read-scoped token
+cannot invoke a tool).
+
+## Status and limits
+
+- JSON-RPC batch requests are authenticated but not per-method scope-checked;
+  enforce batching policy upstream or reject batches if your threat model needs
+  it.
+- Streaming (SSE) MCP responses are proxied as the upstream returns them; this
+  build buffers the response body. Streaming pass-through is a known next step.
+
+## License
+
+MIT. See `LICENSE`.
