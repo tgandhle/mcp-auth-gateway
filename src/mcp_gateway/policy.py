@@ -63,10 +63,36 @@ class ScopePolicy:
     def from_file(cls, path: str) -> "ScopePolicy":
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        rules = {k: frozenset(v) for k, v in data.get("rules", {}).items()}
-        default = frozenset(data.get("default", []))
-        deny = bool(data.get("deny_by_default", True))
-        return cls(rules=rules, default=default, deny_by_default=deny)
+        if not isinstance(data, dict):
+            raise ValueError("scope policy file must be a JSON object")
+
+        raw_rules = data.get("rules", {})
+        if not isinstance(raw_rules, dict):
+            raise ValueError("'rules' must be an object mapping method -> [scopes]")
+        rules: dict[str, frozenset[str]] = {}
+        for method, scopes in raw_rules.items():
+            # A bare string here is the classic bug: "mcp:invoke" would become a
+            # set of characters. Require an explicit list of strings.
+            if isinstance(scopes, str) or not isinstance(scopes, list):
+                raise ValueError(
+                    f"rule '{method}' must map to a list of scope strings, got {type(scopes).__name__}"
+                )
+            if not all(isinstance(s, str) for s in scopes):
+                raise ValueError(f"rule '{method}' contains a non-string scope")
+            rules[method] = frozenset(scopes)
+
+        raw_default = data.get("default", [])
+        if isinstance(raw_default, str) or not isinstance(raw_default, list):
+            raise ValueError("'default' must be a list of scope strings")
+        if not all(isinstance(s, str) for s in raw_default):
+            raise ValueError("'default' contains a non-string scope")
+        default = frozenset(raw_default)
+
+        raw_deny = data.get("deny_by_default", True)
+        if not isinstance(raw_deny, bool):
+            raise ValueError("'deny_by_default' must be a JSON boolean (true/false)")
+
+        return cls(rules=rules, default=default, deny_by_default=raw_deny)
 
     def _match(self, method: str) -> Optional[frozenset[str]]:
         # Exact match wins.

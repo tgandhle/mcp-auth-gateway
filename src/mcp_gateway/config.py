@@ -52,8 +52,21 @@ class Settings(BaseSettings):
     # Require auth on the proxied MCP endpoint. Disable only for local dev.
     require_auth: bool = True
 
-    # Outbound request timeout to upstream, seconds.
+    # Outbound request timeout to upstream, seconds (overall default).
     upstream_timeout: float = 30.0
+    # Fine-grained timeouts; fall back to upstream_timeout when unset.
+    connect_timeout: Optional[float] = None
+    read_timeout: Optional[float] = None
+    write_timeout: Optional[float] = None
+    pool_timeout: Optional[float] = None
+
+    # Reject request bodies larger than this many bytes (DoS guard). 0 = no limit.
+    max_request_bytes: int = 5 * 1024 * 1024
+
+    # Public base URL the gateway is reached at (e.g. https://mcp.example.com),
+    # used to build the RFC 9728 metadata and WWW-Authenticate URLs correctly
+    # when running behind TLS / a load balancer. Falls back to host:port.
+    public_base_url: Optional[str] = None
 
 
 def load_settings() -> Settings:

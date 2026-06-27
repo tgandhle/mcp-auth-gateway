@@ -18,6 +18,7 @@ where to get a token.
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +26,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from .audit import AuditContext, new_request_id
 from .config import Settings
 from .policy import ScopePolicy
 from .verifier import JwksVerifier, TokenError, VerifiedToken
@@ -58,8 +60,14 @@ def _bearer_token(request: Request) -> str:
     return header[7:].strip()
 
 
+def _base_url(settings: Settings) -> str:
+    if settings.public_base_url:
+        return settings.public_base_url.rstrip("/")
+    return f"http://{settings.host}:{settings.port}"
+
+
 def _resource_metadata_url(settings: Settings) -> str:
-    return f"http://{settings.host}:{settings.port}/.well-known/oauth-protected-resource"
+    return f"{_base_url(settings)}/.well-known/oauth-protected-resource"
 
 
 def _unauthorized(settings: Settings, detail: str) -> JSONResponse:
@@ -79,17 +87,31 @@ def _forbidden(detail: str, required: list[str]) -> JSONResponse:
     )
 
 
+def _build_timeout(settings: Settings) -> httpx.Timeout:
+    base = settings.upstream_timeout
+    return httpx.Timeout(
+        connect=settings.connect_timeout if settings.connect_timeout is not None else base,
+        read=settings.read_timeout if settings.read_timeout is not None else base,
+        write=settings.write_timeout if settings.write_timeout is not None else base,
+        pool=settings.pool_timeout if settings.pool_timeout is not None else base,
+    )
+
+
 def create_app(
     settings: Settings,
     verifier: JwksVerifier | None,
     policy: ScopePolicy,
 ) -> FastAPI:
-    app = FastAPI(title="MCP Auth Gateway", version="0.1.0")
-    client = httpx.AsyncClient(timeout=settings.upstream_timeout)
+    client = httpx.AsyncClient(timeout=_build_timeout(settings))
 
-    @app.on_event("shutdown")
-    async def _close() -> None:
-        await client.aclose()
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            await client.aclose()
+
+    app = FastAPI(title="MCP Auth Gateway", version="0.1.0", lifespan=lifespan)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -109,51 +131,88 @@ def create_app(
 
     @app.post("/mcp")
     async def proxy_mcp(request: Request) -> Response:
+        audit = AuditContext(
+            request_id=request.headers.get("x-request-id") or new_request_id(),
+            source_ip=request.client.host if request.client else None,
+        )
+        audit.record.issuer = settings.issuer
+        audit.record.audience = settings.audience
+
+        # 0. Body-size guard before reading the whole body into memory.
+        if settings.max_request_bytes > 0:
+            declared = request.headers.get("content-length")
+            if declared is not None and declared.isdigit() and int(declared) > settings.max_request_bytes:
+                audit.record.decision = "rejected"
+                audit.record.error_code = "payload_too_large"
+                audit.emit()
+                return JSONResponse(status_code=413, content={"error": "payload_too_large", "detail": "request body exceeds limit"})
+
         raw = await request.body()
+        if settings.max_request_bytes > 0 and len(raw) > settings.max_request_bytes:
+            audit.record.decision = "rejected"
+            audit.record.error_code = "payload_too_large"
+            audit.emit()
+            return JSONResponse(status_code=413, content={"error": "payload_too_large", "detail": "request body exceeds limit"})
 
         # 1. Authenticate.
         verified: VerifiedToken | None = None
         if settings.require_auth:
             if verifier is None:
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": "server_misconfigured", "detail": "auth required but no verifier"},
-                )
+                audit.record.decision = "error"
+                audit.record.error_code = "server_misconfigured"
+                audit.emit()
+                return JSONResponse(status_code=500, content={"error": "server_misconfigured", "detail": "auth required but no verifier"})
             token = _bearer_token(request)
             if not token:
+                audit.record.decision = "rejected"
+                audit.record.error_code = "missing_token"
+                audit.emit()
                 return _unauthorized(settings, "missing bearer token")
             try:
                 verified = verifier.verify(token)
             except TokenError as exc:
+                audit.record.decision = "rejected"
+                audit.record.error_code = "invalid_token"
+                audit.record.reason = str(exc)
+                audit.emit()
                 return _unauthorized(settings, str(exc))
+            audit.record.subject = verified.subject
+            audit.record.held_scope_count = len(verified.scopes)
+            audit.record._scope_values = sorted(verified.scopes)
 
-        # 2. Parse the JSON-RPC request and enforce scope. This path fails
-        #    closed: anything we cannot resolve to a single authorized method
-        #    is rejected, never forwarded. Batches are rejected outright
-        #    because per-item authorization is not implemented; forwarding a
-        #    batch would let a caller smuggle a method past the scope check.
+        # 2. Parse the JSON-RPC request and enforce scope. Fails closed:
+        #    anything we cannot resolve to a single authorized method is
+        #    rejected, never forwarded. Batches are refused because per-item
+        #    authorization is not implemented.
         held = verified.scopes if verified else frozenset()
         parsed = _parse_jsonrpc(raw)
         if parsed.error is not None:
+            audit.record.decision = "rejected"
+            audit.record.error_code = parsed.error_code
+            audit.record.reason = parsed.error
+            audit.emit()
             return JSONResponse(status_code=400, content={"error": parsed.error_code, "detail": parsed.error})
-        # parsed.method is guaranteed non-None when error is None.
+
+        audit.record.method = parsed.method
         decision = policy.check(parsed.method, held)  # type: ignore[arg-type]
+        audit.record.required_scopes = sorted(decision.required)
         if not decision.allowed:
+            audit.record.decision = "denied"
+            audit.record.error_code = "insufficient_scope"
+            audit.record.reason = decision.reason
+            audit.emit()
             return _forbidden(decision.reason, sorted(decision.required))
 
-        # 3. Reverse-proxy to upstream, forwarding safe headers and identity.
-        #    Strip every inbound identity-bearing header before injecting our
-        #    own, so a client can't spoof identity by setting X-Forwarded-Sub
-        #    (critical if auth is ever disabled in front of a trusting upstream).
+        # 3. Reverse-proxy. Strip every inbound identity-bearing header before
+        #    injecting verified identity, so a client can't spoof it.
         fwd_headers = {
             k: v for k, v in request.headers.items()
             if k.lower() not in _HOP_BY_HOP
             and k.lower() != "authorization"
             and k.lower() not in _SPOOFABLE_IDENTITY_HEADERS
         }
+        fwd_headers["X-Request-Id"] = audit.record.request_id
         if verified is not None:
-            # Pass verified identity to upstream out-of-band. Upstream should
-            # trust these only because it sits behind this gateway.
             fwd_headers["X-Forwarded-Sub"] = verified.subject
             fwd_headers["X-Forwarded-Scopes"] = " ".join(sorted(verified.scopes))
 
@@ -164,10 +223,15 @@ def create_app(
                 headers=fwd_headers,
             )
         except httpx.RequestError as exc:
-            return JSONResponse(
-                status_code=502,
-                content={"error": "bad_gateway", "detail": f"upstream unreachable: {exc.__class__.__name__}"},
-            )
+            audit.record.decision = "error"
+            audit.record.error_code = "bad_gateway"
+            audit.record.reason = exc.__class__.__name__
+            audit.emit()
+            return JSONResponse(status_code=502, content={"error": "bad_gateway", "detail": f"upstream unreachable: {exc.__class__.__name__}"})
+
+        audit.record.decision = "allowed"
+        audit.record.upstream_status = upstream.status_code
+        audit.emit()
 
         resp_headers = {
             k: v for k, v in upstream.headers.items()

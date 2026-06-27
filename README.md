@@ -30,6 +30,13 @@ point your MCP clients at the gateway, point the gateway at the server.
   because it sits behind this gateway on a private network.
 - **PKCE helper.** RFC 7636 verifier/challenge generation and authorization-URL
   building, for clients that need to acquire tokens.
+- **Audit logging.** Every authorization decision emits one structured JSON line
+  on the `mcp_gateway.audit` logger: request id, subject, method, decision,
+  required scopes, held-scope count, upstream status, latency, source IP. Raw
+  tokens and PKCE verifiers are never logged. Scope *values* appear only at
+  DEBUG; INFO logs the count.
+- **Resilience guards.** Configurable max request body size (default 5 MiB,
+  returns `413`) and per-phase upstream timeouts (connect/read/write/pool).
 
 ## Why these choices
 
@@ -53,6 +60,9 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_REQUIRE_AUTH` | no | Default `true`; set `false` only for local dev |
 | `GATEWAY_HOST` / `GATEWAY_PORT` | no | Default `127.0.0.1:8080` |
+| `GATEWAY_PUBLIC_BASE_URL` | no | External URL (e.g. `https://mcp.example.com`) for metadata/`WWW-Authenticate` when behind TLS or a load balancer |
+| `GATEWAY_MAX_REQUEST_BYTES` | no | Reject bodies larger than this; default 5 MiB, `0` disables |
+| `GATEWAY_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | no | Per-phase upstream timeouts; fall back to `GATEWAY_UPSTREAM_TIMEOUT` |
 
 ## Run
 
@@ -105,10 +115,11 @@ cannot invoke a tool).
   Malformed JSON and JSON-RPC objects without a string `method` are likewise
   rejected with `400` rather than proxied. The authorization path fails closed.
 - Streaming (SSE) MCP responses are proxied as the upstream returns them; this
-  build buffers the response body. Streaming pass-through is a known next step.
-- The protected-resource metadata URL is currently derived from the bind
-  host/port. Behind TLS or a load balancer, set an explicit public base URL
-  (planned `GATEWAY_PUBLIC_BASE_URL`) so the `WWW-Authenticate` hint is correct.
+  build buffers the response body. Streaming pass-through is a known next step,
+  as is an explicit cap on upstream response size (the request side is capped).
+- The protected-resource metadata and `WWW-Authenticate` URLs honor
+  `GATEWAY_PUBLIC_BASE_URL` when set, and fall back to the bind host/port. Set
+  it when running behind TLS or a load balancer.
 
 ## License
 
