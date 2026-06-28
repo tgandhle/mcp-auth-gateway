@@ -1,0 +1,128 @@
+# Gateway namespace, deployment, and service.
+#
+# Security model (enforced by network-policy.yaml, not by this file):
+#   Clients may reach the GATEWAY only. The upstream MCP server is reachable
+#   ONLY from gateway pods. That isolation is what makes the gateway's
+#   identity-forwarding safe: a client cannot bypass the gateway and send a
+#   forged X-Forwarded-Sub straight to the upstream, because it cannot route
+#   to the upstream at all.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-gateway
+  labels:
+    name: mcp-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: mcp-gateway
+  labels:
+    app: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: ghcr.io/tgandhle/mcp-auth-gateway:main
+          # Published by .github/workflows/publish-image.yml on every push to
+          # main. For a pinned production deploy, replace :main with a specific
+          # release tag (e.g. :0.1.0) or an immutable :sha-<short> digest.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GATEWAY_HOST
+              value: "0.0.0.0"
+            - name: GATEWAY_PORT
+              value: "8080"
+            # The upstream is addressed by its in-cluster Service DNS name.
+            # Only gateway pods can actually reach it (see NetworkPolicy).
+            - name: GATEWAY_UPSTREAM_URL
+              value: "http://upstream.mcp-gateway.svc.cluster.local:9000/mcp"
+            - name: GATEWAY_REQUIRE_AUTH
+              value: "true"
+            - name: GATEWAY_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-config
+                  key: issuer
+            - name: GATEWAY_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-config
+                  key: audience
+            - name: GATEWAY_JWKS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-config
+                  key: jwks_url
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: mcp-gateway
+  labels:
+    app: gateway
+spec:
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP
+---
+# Example config. In a real deployment these come from your IdP; jwks_url must
+# be reachable from gateway pods (allow egress accordingly).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: mcp-gateway
+data:
+  issuer: "https://issuer.example.com/"
+  audience: "mcp-gateway"
+  jwks_url: "https://issuer.example.com/.well-known/jwks.json"

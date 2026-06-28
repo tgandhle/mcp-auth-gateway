@@ -1,0 +1,70 @@
+# Example upstream MCP server.
+#
+# This stands in for whatever real MCP server you put behind the gateway. It
+# exists here so the NetworkPolicy and the bypass-prevention test have a
+# concrete target. In production you replace this with your actual MCP server;
+# the NetworkPolicy (selecting app=upstream) is what matters.
+#
+# For the CI bypass test we use a trivial HTTP echo so we can prove two things:
+#   1. a request routed THROUGH the gateway reaches this upstream, and
+#   2. a DIRECT request from a non-gateway pod is refused at the network layer.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upstream
+  namespace: mcp-gateway
+  labels:
+    app: upstream
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: upstream
+  template:
+    metadata:
+      labels:
+        app: upstream
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: upstream
+          # hashicorp/http-echo: tiny static responder. Stand-in only.
+          image: hashicorp/http-echo:1.0
+          args:
+            - "-listen=:9000"
+            - "-text=upstream-reached"
+          ports:
+            - name: http
+              containerPort: 9000
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: upstream
+  namespace: mcp-gateway
+  labels:
+    app: upstream
+spec:
+  selector:
+    app: upstream
+  ports:
+    - name: http
+      port: 9000
+      targetPort: http
+  type: ClusterIP

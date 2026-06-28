@@ -1,0 +1,54 @@
+# The trust boundary, enforced.
+#
+# The gateway strips client-supplied identity headers and injects a verified
+# X-Forwarded-Sub before forwarding upstream. That is only safe if clients
+# cannot reach the upstream directly -- otherwise a caller bypasses the gateway
+# and sends a forged X-Forwarded-Sub straight to the upstream, defeating
+# authentication entirely.
+#
+# This policy makes the upstream reachable ONLY from gateway pods. Everything
+# else -- other pods in the namespace, other namespaces, external clients -- is
+# denied at the network layer by default-deny ingress plus a single allow rule.
+#
+# ENFORCEMENT CAVEAT: NetworkPolicy is only enforced if the cluster's CNI
+# supports and enforces it (Calico, Cilium, etc.). Some CNIs -- including kind's
+# default kindnet -- silently ignore NetworkPolicy, in which case this file is
+# inert. The CI bypass test installs an enforcing CNI specifically to prove the
+# policy works; your production cluster must likewise run an enforcing CNI.
+# Applying this YAML is necessary but NOT sufficient on its own.
+---
+# 1. Default-deny all ingress to the upstream. Nothing can reach it unless a
+#    later rule explicitly allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: upstream-default-deny-ingress
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: upstream
+  policyTypes:
+    - Ingress
+  ingress: []   # empty = deny all ingress
+---
+# 2. Allow ingress to the upstream ONLY from gateway pods, only on the MCP port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: upstream-allow-from-gateway
+  namespace: mcp-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app: upstream
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 9000
