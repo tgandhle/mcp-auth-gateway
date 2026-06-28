@@ -1,0 +1,71 @@
+name: ci
+
+# PR 1 gate. Every push and PR runs the full quality bar:
+#   lint (ruff) -> type-check (mypy) -> SAST (bandit) -> tests (pytest, incl.
+#   parser fuzzing) -> dependency audit (pip-audit).
+# All installs come from the committed uv.lock so CI builds are reproducible.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install (locked)
+        # --frozen fails if uv.lock is out of date with pyproject.toml, so a
+        # drifting lock file breaks CI instead of silently resolving fresh.
+        run: uv sync --frozen --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type-check (mypy)
+        run: uv run mypy src
+
+      - name: SAST (bandit)
+        run: uv run bandit -c pyproject.toml -r src
+
+      - name: Tests (pytest + parser fuzzing)
+        run: uv run pytest -q
+
+  audit:
+    # Dependency CVE scan runs in parallel; it inspects the locked deps, so it
+    # doesn't need the dev tooling or the test run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install (locked)
+        run: uv sync --frozen
+
+      - name: Dependency audit (pip-audit)
+        run: uvx pip-audit

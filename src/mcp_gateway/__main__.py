@@ -5,14 +5,15 @@ from __future__ import annotations
 import sys
 
 import uvicorn
+from fastapi import FastAPI
 
 from .app import create_app
-from .config import load_settings
+from .config import Settings, load_settings
 from .policy import ScopePolicy
 from .verifier import JwksVerifier
 
 
-def build() -> tuple[object, object]:
+def build() -> tuple[FastAPI, Settings]:
     settings = load_settings()
 
     policy = (
@@ -46,7 +47,7 @@ def build() -> tuple[object, object]:
 
 def main() -> None:
     app, settings = build()
-    uvicorn.run(app, host=settings.host, port=settings.port)  # type: ignore[attr-defined]
+    uvicorn.run(app, host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":

@@ -22,9 +22,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-import httpx
 import jwt
-from jwt import PyJWKClient, PyJWK
+from jwt import PyJWK, PyJWKClient
 
 
 class TokenError(Exception):

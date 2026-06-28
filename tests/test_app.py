@@ -7,16 +7,14 @@ import json
 
 import httpx
 import jwt
-import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from conftest import AUDIENCE, ISSUER, mint
 from mcp_gateway.app import create_app
 from mcp_gateway.config import Settings
 from mcp_gateway.policy import ScopePolicy
 from mcp_gateway.verifier import JwksVerifier
-from conftest import ISSUER, AUDIENCE, KID, mint
-
 
 UPSTREAM = "http://upstream.test/mcp"
 
