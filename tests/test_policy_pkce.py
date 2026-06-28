@@ -5,8 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 
+from mcp_gateway.pkce import build_authorization_url, generate_pkce
 from mcp_gateway.policy import ScopePolicy
-from mcp_gateway.pkce import generate_pkce, build_authorization_url
 
 
 def test_read_method_requires_read_scope():

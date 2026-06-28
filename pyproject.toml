@@ -5,7 +5,7 @@ description = "An OAuth 2.1 / JWT-enforcing reverse proxy that sits in front of 
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Shumba" }]
+authors = [{ name = "T. Gandhle" }]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -21,6 +21,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "respx>=0.21",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "bandit>=1.7",
+    "mypy>=1.10",
 ]
 
 [project.scripts]
@@ -37,3 +41,29 @@ packages = ["src/mcp_gateway"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Pragmatic starter set: pycodestyle errors, pyflakes, isort, bugbear,
+# comprehensions, pyupgrade. Not exhaustive; tighten over time.
+select = ["E", "F", "I", "B", "C4"]
+# Long lines in tests are usually crafted tokens/payloads; don't fight them.
+ignore = ["E501"]
+
+[tool.mypy]
+# Day-one posture: type-check the source, don't block on test typing yet.
+python_version = "3.10"
+files = ["src"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+# Intentionally NOT strict on day one. Tighten incrementally:
+#   disallow_untyped_defs, disallow_any_generics, strict_equality, etc.
+
+[tool.bandit]
+# Source only; tests legitimately do things bandit flags (assert, fake tokens).
+exclude_dirs = ["tests", ".venv"]
