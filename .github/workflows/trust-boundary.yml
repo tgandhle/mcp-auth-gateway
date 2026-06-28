@@ -1,0 +1,70 @@
+name: trust-boundary
+
+# Proves the gateway-to-upstream NetworkPolicy is actually ENFORCED, not just
+# valid YAML. Spins up a kind cluster, installs Calico (an enforcing CNI --
+# kind's default kindnet does NOT enforce NetworkPolicy), applies the manifests,
+# and runs the bypass-prevention assertions.
+#
+# This validates the policy artifact under a real enforcing CNI. It does not
+# prove any particular PRODUCTION cluster enforces it; that depends on that
+# cluster's CNI. See deploy/k8s/network-policy.yaml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - ".github/workflows/trust-boundary.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - ".github/workflows/trust-boundary.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate manifests (kubeconform)
+        uses: docker://ghcr.io/yannh/kubeconform:latest
+        with:
+          args: "-strict -summary deploy/k8s/namespace.yaml deploy/k8s/gateway.yaml deploy/k8s/upstream.yaml deploy/k8s/network-policy.yaml"
+
+  enforce-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # kind WITHOUT its default CNI, so we can install an enforcing one.
+      - name: Create kind cluster (no default CNI)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: trust-boundary
+          config: deploy/k8s/kind-calico.yaml
+
+      - name: Install Calico (enforcing CNI)
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+          echo "waiting for calico..."
+          kubectl -n kube-system rollout status ds/calico-node --timeout=180s
+          kubectl wait --for=condition=Ready nodes --all --timeout=180s
+
+      - name: Apply manifests
+        run: |
+          kubectl apply -f deploy/k8s/namespace.yaml
+          kubectl apply -f deploy/k8s/upstream.yaml
+          kubectl apply -f deploy/k8s/network-policy.yaml
+
+      - name: Run bypass-prevention test
+        run: bash deploy/k8s/test-bypass-prevention.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n mcp-gateway get pods,svc,networkpolicy -o wide || true
+          kubectl -n mcp-gateway describe networkpolicy || true
+          kubectl -n kube-system get pods || true

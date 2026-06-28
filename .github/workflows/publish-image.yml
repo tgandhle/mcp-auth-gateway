@@ -1,0 +1,75 @@
+name: publish-image
+
+# Builds the gateway container image and publishes it to GitHub Container
+# Registry (ghcr.io/tgandhle/mcp-auth-gateway). This is what makes
+# deploy/k8s/gateway.yaml actually runnable: that manifest references
+# ghcr.io/tgandhle/mcp-auth-gateway, which this workflow produces.
+#
+# Triggers:
+#   - push to main           -> publishes :main and :sha-<short> (latest dev)
+#   - push of a vX.Y.Z tag   -> publishes :X.Y.Z, :X.Y, and :latest (releases)
+#
+# Uses the built-in GITHUB_TOKEN (no manual secrets). The package inherits the
+# repo's visibility; make it public in the repo's Packages settings if you want
+# the manifest to pull without auth.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+    # Don't rebuild on doc-only changes that can't affect the image.
+    paths-ignore:
+      - "**.md"
+      - "deploy/k8s/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/trust-boundary.yml"
+
+permissions:
+  contents: read
+  packages: write   # required to push to ghcr
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}   # tgandhle/mcp-auth-gateway
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # :latest only on a real version tag, never on a plain main push.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GitHub Actions cache keeps rebuilds fast without a registry cache.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false   # simpler single-arch image; flip on if you want attestations

@@ -7,6 +7,21 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Image publishing (`.github/workflows/publish-image.yml`): builds the
+  `Dockerfile` and pushes to GHCR (`ghcr.io/tgandhle/mcp-auth-gateway`) on
+  pushes to main (`:main`, `:sha-<short>`) and on `vX.Y.Z` tags (`:X.Y.Z`,
+  `:X.Y`, `:latest`). Makes `deploy/k8s/gateway.yaml` runnable against a real
+  published image.
+- Deployment artifacts (`deploy/`): multi-stage non-root `Dockerfile` built from
+  `uv.lock`, and Kubernetes manifests for the gateway, an example upstream, and
+  a `NetworkPolicy` that makes the upstream reachable only from gateway pods.
+- Trust-boundary CI (`.github/workflows/trust-boundary.yml`): spins up a kind
+  cluster with Calico (an enforcing CNI), applies the manifests, and runs a
+  bypass-prevention test asserting that a non-gateway pod cannot reach the
+  upstream directly. Proves the policy is enforced, not merely valid YAML.
+- `deploy/README.md` documenting the trust model, the enforcement caveat (a
+  NetworkPolicy is inert under a non-enforcing CNI such as kindnet), and the
+  recommendation to add mTLS for high-sensitivity deployments.
 - Continuous integration (`.github/workflows/ci.yml`): ruff lint, mypy
   type-check, bandit SAST, pytest, and pip-audit dependency scan, all installed
   from a pinned `uv.lock` for reproducible builds.
