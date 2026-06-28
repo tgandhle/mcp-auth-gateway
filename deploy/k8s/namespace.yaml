@@ -1,0 +1,11 @@
+﻿# Namespace for all gateway resources.
+#
+# Kept in its own file (rather than inside gateway.yaml) so the trust-boundary
+# CI test can create the namespace without applying the full gateway Deployment,
+# which references a published image the test does not need.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp-gateway
+  labels:
+    name: mcp-gateway

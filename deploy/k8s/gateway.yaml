@@ -1,4 +1,4 @@
-# Gateway namespace, deployment, and service.
+# Gateway deployment and service. The namespace is defined in namespace.yaml.
 #
 # Security model (enforced by network-policy.yaml, not by this file):
 #   Clients may reach the GATEWAY only. The upstream MCP server is reachable
@@ -6,13 +6,6 @@
 #   identity-forwarding safe: a client cannot bypass the gateway and send a
 #   forged X-Forwarded-Sub straight to the upstream, because it cannot route
 #   to the upstream at all.
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: mcp-gateway
-  labels:
-    name: mcp-gateway
 ---
 apiVersion: apps/v1
 kind: Deployment

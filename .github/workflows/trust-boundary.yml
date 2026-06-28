@@ -32,7 +32,7 @@ jobs:
       - name: Validate manifests (kubeconform)
         uses: docker://ghcr.io/yannh/kubeconform:latest
         with:
-          args: "-strict -summary deploy/k8s/gateway.yaml deploy/k8s/upstream.yaml deploy/k8s/network-policy.yaml"
+          args: "-strict -summary deploy/k8s/namespace.yaml deploy/k8s/gateway.yaml deploy/k8s/upstream.yaml deploy/k8s/network-policy.yaml"
 
   enforce-boundary:
     runs-on: ubuntu-latest
@@ -55,6 +55,7 @@ jobs:
 
       - name: Apply manifests
         run: |
+          kubectl apply -f deploy/k8s/namespace.yaml
           kubectl apply -f deploy/k8s/upstream.yaml
           kubectl apply -f deploy/k8s/network-policy.yaml
 
