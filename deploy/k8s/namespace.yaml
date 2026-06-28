@@ -1,4 +1,4 @@
-﻿# Namespace for all gateway resources.
+# Namespace for all gateway resources.
 #
 # Kept in its own file (rather than inside gateway.yaml) so the trust-boundary
 # CI test can create the namespace without applying the full gateway Deployment,
