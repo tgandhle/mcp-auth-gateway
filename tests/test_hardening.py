@@ -12,20 +12,24 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
-from mcp_gateway.app import create_app, _base_url
+from conftest import AUDIENCE, ISSUER, mint
+from mcp_gateway.app import _base_url, create_app
 from mcp_gateway.config import Settings
 from mcp_gateway.policy import ScopePolicy
 from mcp_gateway.verifier import JwksVerifier
-from conftest import ISSUER, AUDIENCE, mint
 
 UPSTREAM = "http://upstream.test/mcp"
 
 
 def _settings(**kw) -> Settings:
-    base = dict(
-        upstream_url=UPSTREAM, issuer=ISSUER, audience=AUDIENCE,
-        jwks_url="https://issuer.test/jwks.json", host="127.0.0.1", port=8080,
-    )
+    base = {
+        "upstream_url": UPSTREAM,
+        "issuer": ISSUER,
+        "audience": AUDIENCE,
+        "jwks_url": "https://issuer.test/jwks.json",
+        "host": "127.0.0.1",
+        "port": 8080,
+    }
     base.update(kw)
     return Settings(**base)
 

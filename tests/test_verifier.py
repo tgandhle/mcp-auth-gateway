@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 
+from conftest import AUDIENCE, ISSUER, KID, mint
 from mcp_gateway.verifier import JwksVerifier, TokenError
-from conftest import ISSUER, AUDIENCE, KID, mint
 
 
 def make_verifier(monkeypatch, jwks, algs=None) -> JwksVerifier:
@@ -64,7 +63,8 @@ def test_wrong_issuer(monkeypatch, jwks, rsa_key):
 def test_alg_none_rejected(monkeypatch, jwks, rsa_key):
     v = make_verifier(monkeypatch, jwks)
     # craft an alg=none token
-    import base64, json
+    import base64
+    import json
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": KID}).encode()).rstrip(b"=").decode()
     payload = base64.urlsafe_b64encode(json.dumps({"sub": "x", "iss": ISSUER, "aud": AUDIENCE}).encode()).rstrip(b"=").decode()
     token = f"{header}.{payload}."
