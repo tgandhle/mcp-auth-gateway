@@ -8,7 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from .app import create_app
-from .config import Settings, load_settings
+from .config import ConfigError, Settings, load_settings
 from .policy import ScopePolicy
 from .verifier import JwksVerifier
 
@@ -24,16 +24,10 @@ def build() -> tuple[FastAPI, Settings]:
 
     verifier = None
     if settings.require_auth:
-        jwks_url = str(settings.jwks_url) if settings.jwks_url else None
-        if not jwks_url:
-            print(
-                "error: GATEWAY_JWKS_URL is required when auth is enabled "
-                "(or set GATEWAY_REQUIRE_AUTH=false for local dev).",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
+        # load_settings has already validated that jwks_url is present when auth
+        # is enabled, so this is guaranteed non-None here.
         verifier = JwksVerifier(
-            jwks_url=jwks_url,
+            jwks_url=str(settings.jwks_url),
             issuer=settings.issuer,
             audience=settings.audience,
             allowed_algorithms=settings.allowed_algorithms,
@@ -46,7 +40,13 @@ def build() -> tuple[FastAPI, Settings]:
 
 
 def main() -> None:
-    app, settings = build()
+    try:
+        app, settings = build()
+    except ConfigError as exc:
+        # Configuration problems are operator errors, not bugs: print the list
+        # cleanly and exit non-zero rather than dumping a traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 

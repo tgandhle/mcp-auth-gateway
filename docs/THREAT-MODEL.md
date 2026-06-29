@@ -90,6 +90,16 @@ max body size (default 5 MiB) returns `413`; the limit is checked before the bod
 is read in full. **Verify:** `src/mcp_gateway/app.py`;
 `tests/test_hardening.py`.
 
+### Misconfiguration that silently weakens enforcement
+An operator starting the gateway with a config that parses but is unsafe: auth
+enabled with no JWKS URL, a symmetric or `none` signing algorithm, an empty
+issuer/audience, or a missing scope-policy file. Left unchecked these surface as
+confusing request-time errors or, worse, as a gateway that appears up but cannot
+enforce. **Defense:** the gateway validates its configuration at startup,
+collects every problem, and exits non-zero before serving traffic rather than
+failing per request. **Verify:** `src/mcp_gateway/config.py`
+(`validate_runtime`); `tests/test_config.py`.
+
 ### Audit correlation integrity
 A caller setting its own `X-Request-Id` to pollute, collide with, or forge the
 audit correlation id, or to have a client-chosen id forwarded upstream as though

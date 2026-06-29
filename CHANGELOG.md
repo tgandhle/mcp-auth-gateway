@@ -7,6 +7,12 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Startup configuration validation: the gateway now validates its config at
+  boot (`Settings.validate_runtime`) and exits non-zero with all problems listed
+  before serving traffic, rather than failing on the first request. Catches auth
+  enabled with no JWKS URL, symmetric/`none` algorithms, empty issuer/audience,
+  a missing scope-policy file, out-of-range port/timeouts, and a schemeless
+  `public_base_url`. (`tests/test_config.py`.)
 - Audit correlation integrity: the gateway now always generates its own
   request id for the audit record and the upstream `X-Request-Id`. A
   client-supplied `X-Request-Id` is stripped before forwarding and recorded
