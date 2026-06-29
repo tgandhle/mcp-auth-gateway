@@ -7,6 +7,11 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Threat model (`docs/THREAT-MODEL.md`): documents what the gateway defends
+  against, what it does not, and the preconditions its security depends on. Each
+  defense points at the code or CI that backs it.
+- Security policy (`SECURITY.md`): private vulnerability reporting process and
+  scope, linked from the README.
 - Image publishing (`.github/workflows/publish-image.yml`): builds the
   `Dockerfile` and pushes to GHCR (`ghcr.io/tgandhle/mcp-auth-gateway`) on
   pushes to main (`:main`, `:sha-<short>`) and on `vX.Y.Z` tags (`:X.Y.Z`,
