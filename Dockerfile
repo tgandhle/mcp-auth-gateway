@@ -17,7 +17,7 @@ WORKDIR /app
 
 # Install deps first (cached layer) using only the lock + manifest, before the
 # source is copied, so code changes don't bust the dependency layer.
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
