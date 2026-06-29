@@ -12,7 +12,9 @@ Design notes (these are the things an interviewer will probe):
   fact, so a malformed-but-signed token can't slip a wrong ``aud`` through.
 - ``exp``/``nbf``/``iat`` are enforced with a small configurable leeway.
 - JWKS is cached with a TTL. On a ``kid`` miss we force-refresh once (handles
-  key rotation) before failing closed.
+  key rotation) before failing closed, but a forced refresh happens at most
+  once per a configurable cooldown window, so bogus-kid traffic cannot trigger
+  an unbounded number of JWKS fetches against the authorization server.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import jwt
 from jwt import PyJWK, PyJWKClient
@@ -66,6 +68,7 @@ class JwksVerifier:
         allowed_algorithms: list[str],
         leeway_seconds: int = 30,
         cache_ttl: int = 300,
+        min_refresh_interval: float = 10.0,
     ) -> None:
         if not jwks_url:
             raise ValueError("jwks_url is required")
@@ -80,6 +83,12 @@ class JwksVerifier:
         self._algs = list(allowed_algorithms)
         self._leeway = leeway_seconds
         self._ttl = cache_ttl
+        # Minimum seconds between forced JWKS refreshes. A kid miss forces at
+        # most one refresh per this interval; further misses within the window
+        # fail closed without another fetch. This caps the refresh rate so a
+        # caller sending many tokens with bogus/distinct kids cannot turn the
+        # gateway into a JWKS-fetch amplifier against the authorization server.
+        self._min_refresh_interval = min_refresh_interval
 
         self._lock = threading.Lock()
         self._client = PyJWKClient(jwks_url, cache_keys=True, lifespan=cache_ttl)
@@ -91,7 +100,13 @@ class JwksVerifier:
     def _get_signing_key(self, token: str, *, force: bool) -> PyJWK:
         with self._lock:
             now = time.monotonic()
-            if force or (now - self._last_refresh) > self._ttl:
+            ttl_expired = (now - self._last_refresh) > self._ttl
+            # A forced refresh (kid miss) is honored only if we have not
+            # refreshed within the cooldown window. This is what caps the
+            # JWKS-fetch rate under a flood of bogus-kid tokens. A TTL-expired
+            # refresh is always allowed; it is naturally rate-limited by the TTL.
+            force_allowed = force and (now - self._last_refresh) >= self._min_refresh_interval
+            if force_allowed or ttl_expired:
                 # Rebuild the client to drop any stale cached keys.
                 self._client = PyJWKClient(self._jwks_url, cache_keys=True, lifespan=self._ttl)
                 self._last_refresh = now
@@ -112,7 +127,7 @@ class JwksVerifier:
         if alg not in self._algs:
             raise TokenError(f"algorithm not allowed: {alg!r}")
 
-        signing_key: Optional[PyJWK] = None
+        signing_key: PyJWK | None = None
         try:
             signing_key = self._get_signing_key(token, force=False)
         except jwt.PyJWTError:

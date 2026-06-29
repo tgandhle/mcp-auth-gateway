@@ -33,6 +33,7 @@ def build() -> tuple[FastAPI, Settings]:
             allowed_algorithms=settings.allowed_algorithms,
             leeway_seconds=settings.leeway_seconds,
             cache_ttl=settings.jwks_cache_ttl,
+            min_refresh_interval=settings.jwks_min_refresh_interval,
         )
 
     app = create_app(settings, verifier, policy)

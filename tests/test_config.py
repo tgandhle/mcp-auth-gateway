@@ -150,3 +150,15 @@ def test_negative_max_request_bytes_fails():
     with pytest.raises(ConfigError) as ei:
         s.validate_runtime()
     assert any("GATEWAY_MAX_REQUEST_BYTES" in p for p in ei.value.problems)
+
+
+def test_negative_jwks_min_refresh_interval_fails():
+    s = _valid(jwks_min_refresh_interval=-1.0)
+    with pytest.raises(ConfigError) as ei:
+        s.validate_runtime()
+    assert any("GATEWAY_JWKS_MIN_REFRESH_INTERVAL" in p for p in ei.value.problems)
+
+
+def test_zero_jwks_min_refresh_interval_passes():
+    # Zero is allowed: it means "always allow a forced refresh on kid miss".
+    _valid(jwks_min_refresh_interval=0.0).validate_runtime()

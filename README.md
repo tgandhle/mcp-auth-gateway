@@ -16,7 +16,9 @@ point your MCP clients at the gateway, point the gateway at the server.
   (RS/ES/PS); `none` and HMAC algs are refused at construction time, which
   closes the algorithm-confusion class of bypass.
 - **Key rotation.** Selects the verification key by the token's `kid`. On a
-  `kid` miss it force-refreshes the JWKS once before failing closed.
+  `kid` miss it force-refreshes the JWKS once before failing closed, rate-limited
+  to at most one forced refresh per cooldown window so unknown-`kid` traffic
+  cannot amplify into repeated JWKS fetches.
 - **Per-method scope enforcement.** MCP methods (`tools/call`, `tools/list`,
   `resources/read`, ...) are mapped to required scopes by a policy. Read vs.
   invoke is separated by default. Unknown methods are denied by default.
@@ -56,6 +58,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
 | `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
 | `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
+| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS refreshes on a `kid` miss; default `10`. Caps JWKS refetch rate under unknown-`kid` traffic |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_REQUIRE_AUTH` | no | Default `true`; set `false` only for local dev |
