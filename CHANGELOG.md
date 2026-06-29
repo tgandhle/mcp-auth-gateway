@@ -6,6 +6,16 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.0] - 2026-06-29
+
+First tagged release. Establishes the gateway and its security posture:
+token verification with algorithm pinning, per-method scope enforcement,
+fail-closed JSON-RPC parsing, verified identity forwarding, a CI-proven
+deployment trust boundary, a published container image, and the hardening
+items below.
+
 ### Added
 - JWKS refresh cooldown: a `kid` miss now forces at most one JWKS refresh per
   `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` (default 10s). Genuine key rotation is
