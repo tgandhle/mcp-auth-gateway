@@ -78,6 +78,18 @@ objects are rejected with `400` rather than proxied. **Verify:**
 `src/mcp_gateway/app.py`; `tests/test_parser_fuzz.py` exercises the parser with
 ~6k generated inputs and asserts no input produces a fail-open.
 
+### JWKS-refresh amplification via bogus key ids
+A caller sending many tokens with unknown or distinct `kid` values to make the
+gateway repeatedly refetch the JWKS from the authorization server, amplifying
+cheap client traffic into load on the IdP. **Defense:** a `kid` miss forces at
+most one JWKS refresh per a configurable cooldown window
+(`GATEWAY_JWKS_MIN_REFRESH_INTERVAL`, default 10s). Further misses within the
+window fail closed without another fetch. Genuine key rotation is still picked
+up promptly (one refresh per window), but the forced-refresh rate is capped
+regardless of how many bad tokens arrive. **Verify:**
+`src/mcp_gateway/verifier.py`; `tests/test_verifier.py`
+(`test_bogus_kid_flood_is_rate_limited`).
+
 ### Stale signing keys after rotation
 A token signed with a newly rotated key whose `kid` the gateway has not seen.
 **Defense:** the verifier selects the key by `kid` and, on a miss, force-
@@ -180,7 +192,8 @@ These are acknowledged, not yet implemented:
 
 - Streaming (SSE) pass-through with an upstream response-size cap. The current
   build buffers responses.
-- Per-client and per-JWKS-refresh rate limiting.
+- Per-client request rate limiting. (Forced JWKS-refresh rate limiting is
+  implemented; see the JWKS-refresh amplification defense above.)
 - mTLS between gateway and upstream for deployments stronger than network-
   position trust.
 

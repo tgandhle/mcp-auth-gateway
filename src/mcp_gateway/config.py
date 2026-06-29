@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # JWKS cache TTL in seconds.
     jwks_cache_ttl: int = 300
 
+    # Minimum seconds between forced JWKS refreshes triggered by a kid miss.
+    # Caps how often unknown-kid traffic can make the gateway refetch the JWKS.
+    jwks_min_refresh_interval: float = 10.0
+
     # --- Scope policy ---
     # Path to a JSON file mapping MCP method -> required scope(s).
     # If unset, a built-in default policy is used.
@@ -132,6 +136,11 @@ class Settings(BaseSettings):
             problems.append(f"GATEWAY_LEEWAY_SECONDS must be >= 0, got {self.leeway_seconds}")
         if self.jwks_cache_ttl < 0:
             problems.append(f"GATEWAY_JWKS_CACHE_TTL must be >= 0, got {self.jwks_cache_ttl}")
+        if self.jwks_min_refresh_interval < 0:
+            problems.append(
+                f"GATEWAY_JWKS_MIN_REFRESH_INTERVAL must be >= 0, "
+                f"got {self.jwks_min_refresh_interval}"
+            )
         if self.max_request_bytes < 0:
             problems.append(
                 f"GATEWAY_MAX_REQUEST_BYTES must be >= 0 (0 disables the limit), "

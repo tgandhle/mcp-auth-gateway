@@ -7,6 +7,11 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- JWKS refresh cooldown: a `kid` miss now forces at most one JWKS refresh per
+  `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` (default 10s). Genuine key rotation is
+  still picked up promptly, but tokens with bogus or distinct `kid` values can
+  no longer amplify into repeated JWKS fetches against the authorization server.
+  (`tests/test_verifier.py`.)
 - Startup configuration validation: the gateway now validates its config at
   boot (`Settings.validate_runtime`) and exits non-zero with all problems listed
   before serving traffic, rather than failing on the first request. Catches auth
