@@ -90,6 +90,17 @@ max body size (default 5 MiB) returns `413`; the limit is checked before the bod
 is read in full. **Verify:** `src/mcp_gateway/app.py`;
 `tests/test_hardening.py`.
 
+### Audit correlation integrity
+A caller setting its own `X-Request-Id` to pollute, collide with, or forge the
+audit correlation id, or to have a client-chosen id forwarded upstream as though
+the gateway minted it. **Defense:** the gateway always generates its own
+correlation id for the audit record and for the `X-Request-Id` it forwards
+upstream. A client-supplied `X-Request-Id` is stripped before forwarding and
+recorded separately as `client_request_id` (logged for tracing, never used as
+the primary id). **Verify:** `src/mcp_gateway/app.py`; `src/mcp_gateway/audit.py`;
+`tests/test_app.py` (`test_client_request_id_not_trusted`) asserts the client
+value is neither used as the audit id nor leaked upstream.
+
 ### Token leakage via logs
 Operational logs accidentally capturing bearer tokens or PKCE verifiers.
 **Defense:** the audit logger emits one structured line per decision and never

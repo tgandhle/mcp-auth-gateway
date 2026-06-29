@@ -131,10 +131,17 @@ def create_app(
 
     @app.post("/mcp")
     async def proxy_mcp(request: Request) -> Response:
+        # Audit correlation id is always gateway-owned. A client-supplied
+        # X-Request-Id is recorded separately as client_request_id for tracing,
+        # but is never used as the primary audit id and is never forwarded as
+        # if the gateway minted it. This keeps audit correlation under the
+        # gateway's control: a caller cannot choose, collide, or forge it.
+        client_rid = request.headers.get("x-request-id")
         audit = AuditContext(
-            request_id=request.headers.get("x-request-id") or new_request_id(),
+            request_id=new_request_id(),
             source_ip=request.client.host if request.client else None,
         )
+        audit.record.client_request_id = client_rid
         audit.record.issuer = settings.issuer
         audit.record.audience = settings.audience
 
@@ -209,6 +216,7 @@ def create_app(
             k: v for k, v in request.headers.items()
             if k.lower() not in _HOP_BY_HOP
             and k.lower() != "authorization"
+            and k.lower() != "x-request-id"
             and k.lower() not in _SPOOFABLE_IDENTITY_HEADERS
         }
         fwd_headers["X-Request-Id"] = audit.record.request_id
@@ -247,7 +255,7 @@ def create_app(
     return app
 
 
-def _parse_jsonrpc(raw: bytes) -> "JsonRpcParse":
+def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     """Strictly parse a single JSON-RPC request and resolve its method.
 
     Fails closed. Returns an error (which the caller turns into a 400) for:

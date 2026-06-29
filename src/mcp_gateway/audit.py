@@ -18,7 +18,6 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
 
 AUDIT_LOGGER = "mcp_gateway.audit"
 _logger = logging.getLogger(AUDIT_LOGGER)
@@ -34,23 +33,25 @@ class AuditRecord:
     through verify -> parse -> policy -> proxy. Emit once at the end."""
 
     request_id: str
-    source_ip: Optional[str] = None
-    subject: Optional[str] = None
-    issuer: Optional[str] = None
-    audience: Optional[str] = None
-    method: Optional[str] = None
+    client_request_id: str | None = None
+    source_ip: str | None = None
+    subject: str | None = None
+    issuer: str | None = None
+    audience: str | None = None
+    method: str | None = None
     decision: str = "pending"          # allowed | denied | rejected | error
-    error_code: Optional[str] = None
-    reason: Optional[str] = None
+    error_code: str | None = None
+    reason: str | None = None
     required_scopes: list[str] = field(default_factory=list)
     held_scope_count: int = 0
-    upstream_status: Optional[int] = None
-    latency_ms: Optional[float] = None
+    upstream_status: int | None = None
+    latency_ms: float | None = None
     _scope_values: list[str] = field(default_factory=list)  # DEBUG-only
 
     def to_dict(self, include_scope_values: bool = False) -> dict:
         d = {
             "request_id": self.request_id,
+            "client_request_id": self.client_request_id,
             "source_ip": self.source_ip,
             "subject": self.subject,
             "issuer": self.issuer,
@@ -72,7 +73,7 @@ class AuditRecord:
 class AuditContext:
     """Times a request and emits its record exactly once on exit."""
 
-    def __init__(self, request_id: Optional[str] = None, source_ip: Optional[str] = None) -> None:
+    def __init__(self, request_id: str | None = None, source_ip: str | None = None) -> None:
         self.record = AuditRecord(request_id=request_id or new_request_id(), source_ip=source_ip)
         self._start = time.monotonic()
 

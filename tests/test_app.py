@@ -187,3 +187,61 @@ def test_inbound_identity_header_stripped(monkeypatch, jwks, rsa_key):
     sent = route.calls.last.request
     assert sent.headers.get("X-Forwarded-Sub") == "real-user"
     assert "x-user-id" not in {k.lower() for k in sent.headers}
+
+
+@respx.mock
+def test_client_request_id_not_trusted(monkeypatch, jwks, rsa_key, caplog):
+    # A client-supplied X-Request-Id must not become the gateway's audit
+    # correlation id, and must not leak upstream. The gateway mints its own id,
+    # forwards that, and records the client's value separately as
+    # client_request_id for tracing only.
+    import logging
+
+    route = respx.post(UPSTREAM).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "ok"})
+    )
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:invoke")
+    with caplog.at_level(logging.INFO, logger="mcp_gateway.audit"):
+        r = c.post(
+            "/mcp",
+            content=_rpc("tools/call"),
+            headers={"Authorization": f"Bearer {token}", "X-Request-Id": "client-chosen-id"},
+        )
+    assert r.status_code == 200
+
+    sent = route.calls.last.request
+    forwarded = sent.headers.get("X-Request-Id")
+    # The gateway forwards its own id, never the client's.
+    assert forwarded is not None
+    assert forwarded != "client-chosen-id"
+    assert len(forwarded) == 32  # uuid4().hex
+    # The client's value must not survive anywhere in the upstream headers.
+    assert "client-chosen-id" not in " ".join(sent.headers.values())
+
+    # The audit record uses the gateway id as request_id and keeps the client's
+    # value as a separate, clearly-labelled field.
+    audit_line = [r.message for r in caplog.records if r.name == "mcp_gateway.audit"][-1]
+    audit = json.loads(audit_line)
+    assert audit["request_id"] == forwarded
+    assert audit["request_id"] != "client-chosen-id"
+    assert audit["client_request_id"] == "client-chosen-id"
+
+
+@respx.mock
+def test_request_id_minted_when_client_sends_none(monkeypatch, jwks, rsa_key, caplog):
+    # With no inbound X-Request-Id, the gateway still mints one and does not
+    # emit a client_request_id field.
+    import logging
+
+    respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:invoke")
+    with caplog.at_level(logging.INFO, logger="mcp_gateway.audit"):
+        r = c.post("/mcp", content=_rpc("tools/call"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    audit_line = [r.message for r in caplog.records if r.name == "mcp_gateway.audit"][-1]
+    audit = json.loads(audit_line)
+    assert len(audit["request_id"]) == 32
+    # client_request_id is dropped from output when None (to_dict strips None).
+    assert "client_request_id" not in audit
