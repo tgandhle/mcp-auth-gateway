@@ -7,6 +7,11 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Audit correlation integrity: the gateway now always generates its own
+  request id for the audit record and the upstream `X-Request-Id`. A
+  client-supplied `X-Request-Id` is stripped before forwarding and recorded
+  separately as `client_request_id`, so a caller cannot choose, collide with,
+  or forge the audit correlation id. (`tests/test_app.py`.)
 - Threat model (`docs/THREAT-MODEL.md`): documents what the gateway defends
   against, what it does not, and the preconditions its security depends on. Each
   defense points at the code or CI that backs it.
