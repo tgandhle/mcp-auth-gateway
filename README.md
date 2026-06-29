@@ -121,6 +121,15 @@ cannot invoke a tool).
   `GATEWAY_PUBLIC_BASE_URL` when set, and fall back to the bind host/port. Set
   it when running behind TLS or a load balancer.
 
+## Security
+
+The [threat model](docs/THREAT-MODEL.md) states what the gateway defends
+against, what it does not, and the preconditions its security depends on (most
+importantly, that the upstream is not reachable directly by clients). Each
+defense points at the code or CI that backs it.
+
+To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
+
 ## License
 
 MIT. See `LICENSE`.
