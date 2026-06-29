@@ -77,6 +77,13 @@ export GATEWAY_JWKS_URL=https://login.example.com/.well-known/jwks.json
 mcp-gateway
 ```
 
+The gateway validates its configuration at startup and refuses to run on an
+unsafe or unusable config (auth enabled with no JWKS URL, a symmetric or `none`
+signing algorithm, a missing scope-policy file, out-of-range port or timeouts,
+a `public_base_url` with no scheme). All problems are reported together and the
+process exits non-zero, so misconfiguration is caught at boot rather than on the
+first request.
+
 ## Scope policy file format
 
 ```json
