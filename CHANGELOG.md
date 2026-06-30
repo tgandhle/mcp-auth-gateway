@@ -6,7 +6,14 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- Stream-completion audit event: after a streamed response finishes, the gateway
+  emits a second audit event recording whether the body completed cleanly or was
+  truncated for exceeding the response cap (`stream_result`, `bytes_streamed`).
+  This lets a SIEM distinguish a capped/truncated response from a clean one,
+  which the initial "allowed" event cannot convey on its own. (`tests/test_app.py`.)
+- CI now runs `uv lock --check` before installing, so a lockfile that has drifted
+  from `pyproject.toml` fails the build rather than shipping silently.
 
 ## [0.2.0] - 2026-06-29
 

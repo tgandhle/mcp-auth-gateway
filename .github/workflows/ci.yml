@@ -32,6 +32,12 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Check lockfile is up to date
+        # Fails if uv.lock has drifted from pyproject.toml. Stricter and clearer
+        # than relying on --frozen alone, and protects the reproducible-build
+        # claim: a stale lock breaks CI rather than shipping silently.
+        run: uv lock --check
+
       - name: Install (locked)
         # --frozen fails if uv.lock is out of date with pyproject.toml, so a
         # drifting lock file breaks CI instead of silently resolving fresh.

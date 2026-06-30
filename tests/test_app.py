@@ -326,20 +326,47 @@ def test_cap_zero_disables_limit(monkeypatch, jwks, rsa_key):
 
 
 @respx.mock
-def test_midstream_cap_truncates(monkeypatch, jwks, rsa_key):
+def test_midstream_cap_truncates(monkeypatch, jwks, rsa_key, caplog):
     # No Content-Length, body larger than the cap. The response starts (200,
     # headers already sent), so the cap is enforced by truncation: the client
-    # receives at most cap-ish bytes, not the full body.
+    # receives at most cap-ish bytes, not the full body. A second audit event
+    # must record the truncation so a SIEM can tell it from a clean response.
+    import logging
+
     body = b"z" * 1000
     route_resp = httpx.Response(200, content=body)
-    # Drop content-length so the pre-check can't catch it and we exercise the
-    # mid-stream path.
     route_resp.headers.pop("content-length", None)
     respx.post(UPSTREAM).mock(return_value=route_resp)
     c = _client_cap(monkeypatch, jwks, max_response_bytes=100)
     token = mint(rsa_key, scope="mcp:invoke")
-    r = c.post("/mcp", content=_rpc("tools/call"), headers={"Authorization": f"Bearer {token}"})
-    # Status is 200 (already sent before truncation); body is truncated, so the
-    # client does not receive the full 1000 bytes.
+    with caplog.at_level(logging.INFO, logger="mcp_gateway.audit"):
+        r = c.post("/mcp", content=_rpc("tools/call"), headers={"Authorization": f"Bearer {token}"})
+    # Status is 200 (already sent before truncation); body is truncated.
     assert r.status_code == 200
     assert len(r.content) < 1000
+
+    # Two audit events: the initial "allowed", then a truncation follow-up.
+    audit_events = [json.loads(rec.message) for rec in caplog.records if rec.name == "mcp_gateway.audit"]
+    assert len(audit_events) >= 2
+    last = audit_events[-1]
+    assert last["stream_result"] == "truncated_response_too_large"
+    assert last["bytes_streamed"] > 100
+
+
+@respx.mock
+def test_completed_stream_records_completion(monkeypatch, jwks, rsa_key, caplog):
+    # An under-cap response streams to completion and the follow-up event
+    # records a clean completion with the byte count.
+    import logging
+
+    body = b'{"jsonrpc":"2.0","id":1,"result":"ok"}'
+    respx.post(UPSTREAM).mock(return_value=httpx.Response(200, content=body))
+    c = _client_cap(monkeypatch, jwks, max_response_bytes=10_000)
+    token = mint(rsa_key, scope="mcp:invoke")
+    with caplog.at_level(logging.INFO, logger="mcp_gateway.audit"):
+        r = c.post("/mcp", content=_rpc("tools/call"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    audit_events = [json.loads(rec.message) for rec in caplog.records if rec.name == "mcp_gateway.audit"]
+    last = audit_events[-1]
+    assert last["stream_result"] == "completed"
+    assert last["bytes_streamed"] == len(body)
