@@ -17,8 +17,8 @@ ship deny-by-default.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Optional
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class ScopePolicy:
     deny_by_default: bool = True
 
     @staticmethod
-    def builtin() -> "ScopePolicy":
+    def builtin() -> ScopePolicy:
         """A sane default policy. Read methods need mcp:read, anything that
         executes or mutates needs mcp:invoke."""
         return ScopePolicy(
@@ -60,8 +60,8 @@ class ScopePolicy:
         )
 
     @classmethod
-    def from_file(cls, path: str) -> "ScopePolicy":
-        with open(path, "r", encoding="utf-8") as fh:
+    def from_file(cls, path: str) -> ScopePolicy:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
         if not isinstance(data, dict):
             raise ValueError("scope policy file must be a JSON object")
@@ -94,12 +94,12 @@ class ScopePolicy:
 
         return cls(rules=rules, default=default, deny_by_default=raw_deny)
 
-    def _match(self, method: str) -> Optional[frozenset[str]]:
+    def _match(self, method: str) -> frozenset[str] | None:
         # Exact match wins.
         if method in self.rules:
             return self.rules[method]
         # Longest prefix among rules that end in "/".
-        best: Optional[str] = None
+        best: str | None = None
         for key in self.rules:
             if key.endswith("/") and method.startswith(key):
                 if best is None or len(key) > len(best):
