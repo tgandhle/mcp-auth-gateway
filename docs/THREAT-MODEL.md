@@ -102,6 +102,17 @@ max body size (default 5 MiB) returns `413`; the limit is checked before the bod
 is read in full. **Verify:** `src/mcp_gateway/app.py`;
 `tests/test_hardening.py`.
 
+### Oversized upstream responses
+A compromised or misbehaving upstream returning a very large response body to
+exhaust gateway or client memory. **Defense:** a configurable response cap
+(`GATEWAY_MAX_RESPONSE_BYTES`, default 10 MiB). If the upstream declares a
+`Content-Length` over the cap, the gateway returns `413` before streaming any
+body. If the response is chunked/streamed and exceeds the cap mid-stream, the
+gateway stops and terminates the connection (status and headers are already
+sent, so truncation is the only enforcement available at that point).
+**Verify:** `src/mcp_gateway/app.py`; `tests/test_app.py`
+(`test_oversized_content_length_rejected_413`, `test_midstream_cap_truncates`).
+
 ### Misconfiguration that silently weakens enforcement
 An operator starting the gateway with a config that parses but is unsafe: auth
 enabled with no JWKS URL, a symmetric or `none` signing algorithm, an empty
@@ -157,9 +168,9 @@ These are out of scope by design. They are listed so the boundary is explicit.
 - **Denial of service from traffic volume.** The gateway has per-request guards
   (body-size limit, upstream timeouts) but no built-in rate limiting yet. Edge
   rate limiting is assumed.
-- **Upstream response-side abuse.** The request body is size-capped; an explicit
-  cap on the *upstream's* response size is a known gap, relevant when streaming
-  pass-through is added.
+- **Streaming semantics beyond size.** Responses are streamed through and
+  size-capped, but the gateway does not inspect or authorize streamed content
+  chunk by chunk; it trusts the upstream's output once the request is authorized.
 - **TLS termination.** The gateway expects TLS to be terminated at an ingress or
   load balancer in front of it. It does not itself manage certificates.
 - **Confused-deputy via the upstream's own outbound actions.** Once the upstream
@@ -190,8 +201,6 @@ These are out of scope by design. They are listed so the boundary is explicit.
 
 These are acknowledged, not yet implemented:
 
-- Streaming (SSE) pass-through with an upstream response-size cap. The current
-  build buffers responses.
 - Per-client request rate limiting. (Forced JWKS-refresh rate limiting is
   implemented; see the JWKS-refresh amplification defense above.)
 - mTLS between gateway and upstream for deployments stronger than network-

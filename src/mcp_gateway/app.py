@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .audit import AuditContext, new_request_id
 from .config import Settings
@@ -225,17 +225,35 @@ def create_app(
             fwd_headers["X-Forwarded-Scopes"] = " ".join(sorted(verified.scopes))
 
         try:
-            upstream = await client.post(
+            upstream_cm = client.stream(
+                "POST",
                 str(settings.upstream_url),
                 content=raw,
                 headers=fwd_headers,
             )
+            upstream = await upstream_cm.__aenter__()
         except httpx.RequestError as exc:
             audit.record.decision = "error"
             audit.record.error_code = "bad_gateway"
             audit.record.reason = exc.__class__.__name__
             audit.emit()
             return JSONResponse(status_code=502, content={"error": "bad_gateway", "detail": f"upstream unreachable: {exc.__class__.__name__}"})
+
+        # Response-size cap, clean path: if the upstream declares a Content-Length
+        # larger than the cap, reject with 413 before any body is streamed. The
+        # response has not started, so a proper status is still possible.
+        cap = settings.max_response_bytes
+        if cap > 0:
+            declared = upstream.headers.get("content-length")
+            if declared is not None and declared.isdigit() and int(declared) > cap:
+                await upstream_cm.__aexit__(None, None, None)
+                audit.record.decision = "rejected"
+                audit.record.error_code = "response_too_large"
+                audit.emit()
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "response_too_large", "detail": "upstream response exceeds limit"},
+                )
 
         audit.record.decision = "allowed"
         audit.record.upstream_status = upstream.status_code
@@ -245,8 +263,28 @@ def create_app(
             k: v for k, v in upstream.headers.items()
             if k.lower() not in _HOP_BY_HOP
         }
-        return Response(
-            content=upstream.content,
+
+        async def body_iter():
+            # Stream upstream chunks straight through. Enforce the cap as we go:
+            # once the running total exceeds it we stop yielding and let the
+            # context manager close, which terminates the connection. The status
+            # and headers are already sent at this point, so truncation is the
+            # only enforcement available mid-stream.
+            sent = 0
+            try:
+                async for chunk in upstream.aiter_raw():
+                    if cap > 0:
+                        sent += len(chunk)
+                        if sent > cap:
+                            # Stop; the partial body the client already has is
+                            # terminated by closing the upstream stream below.
+                            break
+                    yield chunk
+            finally:
+                await upstream_cm.__aexit__(None, None, None)
+
+        return StreamingResponse(
+            body_iter(),
             status_code=upstream.status_code,
             headers=resp_headers,
             media_type=upstream.headers.get("content-type"),

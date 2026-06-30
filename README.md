@@ -65,6 +65,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_HOST` / `GATEWAY_PORT` | no | Default `127.0.0.1:8080` |
 | `GATEWAY_PUBLIC_BASE_URL` | no | External URL (e.g. `https://mcp.example.com`) for metadata/`WWW-Authenticate` when behind TLS or a load balancer |
 | `GATEWAY_MAX_REQUEST_BYTES` | no | Reject bodies larger than this; default 5 MiB, `0` disables |
+| `GATEWAY_MAX_RESPONSE_BYTES` | no | Cap upstream response size; default 10 MiB, `0` disables. Over-cap `Content-Length` returns `413`; mid-stream overflow is truncated |
 | `GATEWAY_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | no | Per-phase upstream timeouts; fall back to `GATEWAY_UPSTREAM_TIMEOUT` |
 
 ## Run
@@ -124,10 +125,11 @@ cannot invoke a tool).
   unchecked batch would let a caller smuggle a method past the scope check.
   Malformed JSON and JSON-RPC objects without a string `method` are likewise
   rejected with `400` rather than proxied. The authorization path fails closed.
-- Streaming (SSE) MCP responses are not yet proxied as true streams: this build
-  buffers the upstream response body before returning it. Streaming pass-through
-  and an explicit cap on upstream response size are known next steps (the request
-  side is already capped).
+- Streaming (SSE) MCP responses are proxied as true streams: the gateway streams
+  the upstream response through chunk by chunk rather than buffering it. The
+  upstream response body is capped (`GATEWAY_MAX_RESPONSE_BYTES`, default 10 MiB):
+  an over-cap `Content-Length` is rejected with `413` before streaming, and a
+  stream that exceeds the cap mid-flight is truncated and terminated.
 - The protected-resource metadata and `WWW-Authenticate` URLs honor
   `GATEWAY_PUBLIC_BASE_URL` when set, and fall back to the bind host/port. Set
   it when running behind TLS or a load balancer.

@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     # Reject request bodies larger than this many bytes (DoS guard). 0 = no limit.
     max_request_bytes: int = 5 * 1024 * 1024
 
+    # Cap the upstream RESPONSE body at this many bytes. If the upstream declares
+    # a larger Content-Length, the gateway returns 413 before streaming. If the
+    # response is chunked/streamed and exceeds the cap mid-stream, the gateway
+    # stops and terminates the connection (the status/headers are already sent,
+    # so a clean 413 is no longer possible). 0 = no limit.
+    max_response_bytes: int = 10 * 1024 * 1024
+
     # Public base URL the gateway is reached at (e.g. https://mcp.example.com),
     # used to build the RFC 9728 metadata and WWW-Authenticate URLs correctly
     # when running behind TLS / a load balancer. Falls back to host:port.
@@ -145,6 +152,11 @@ class Settings(BaseSettings):
             problems.append(
                 f"GATEWAY_MAX_REQUEST_BYTES must be >= 0 (0 disables the limit), "
                 f"got {self.max_request_bytes}"
+            )
+        if self.max_response_bytes < 0:
+            problems.append(
+                f"GATEWAY_MAX_RESPONSE_BYTES must be >= 0 (0 disables the limit), "
+                f"got {self.max_response_bytes}"
             )
         if self.upstream_timeout <= 0:
             problems.append(

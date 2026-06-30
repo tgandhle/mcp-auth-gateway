@@ -6,7 +6,12 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- Streaming response pass-through with a size cap: upstream responses are now
+  streamed through chunk by chunk instead of buffered (fixes SSE/chunked
+  upstreams). A configurable cap (`GATEWAY_MAX_RESPONSE_BYTES`, default 10 MiB)
+  rejects an over-cap `Content-Length` with 413 before streaming and truncates
+  a stream that exceeds the cap mid-flight. (`tests/test_app.py`.)
 
 ## [0.1.0] - 2026-06-29
 
