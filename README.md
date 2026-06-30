@@ -124,9 +124,10 @@ cannot invoke a tool).
   unchecked batch would let a caller smuggle a method past the scope check.
   Malformed JSON and JSON-RPC objects without a string `method` are likewise
   rejected with `400` rather than proxied. The authorization path fails closed.
-- Streaming (SSE) MCP responses are proxied as the upstream returns them; this
-  build buffers the response body. Streaming pass-through is a known next step,
-  as is an explicit cap on upstream response size (the request side is capped).
+- Streaming (SSE) MCP responses are not yet proxied as true streams: this build
+  buffers the upstream response body before returning it. Streaming pass-through
+  and an explicit cap on upstream response size are known next steps (the request
+  side is already capped).
 - The protected-resource metadata and `WWW-Authenticate` URLs honor
   `GATEWAY_PUBLIC_BASE_URL` when set, and fall back to the bind host/port. Set
   it when running behind TLS or a load balancer.
