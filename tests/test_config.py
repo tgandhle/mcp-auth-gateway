@@ -162,3 +162,14 @@ def test_negative_jwks_min_refresh_interval_fails():
 def test_zero_jwks_min_refresh_interval_passes():
     # Zero is allowed: it means "always allow a forced refresh on kid miss".
     _valid(jwks_min_refresh_interval=0.0).validate_runtime()
+
+
+def test_max_response_bytes_zero_allowed():
+    _valid(max_response_bytes=0).validate_runtime()
+
+
+def test_negative_max_response_bytes_fails():
+    s = _valid(max_response_bytes=-1)
+    with pytest.raises(ConfigError) as ei:
+        s.validate_runtime()
+    assert any("GATEWAY_MAX_RESPONSE_BYTES" in p for p in ei.value.problems)
