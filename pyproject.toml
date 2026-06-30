@@ -1,6 +1,6 @@
 [project]
 name = "mcp-auth-gateway"
-version = "0.1.0"
+version = "0.2.0"
 description = "An OAuth 2.1 / JWT-enforcing reverse proxy that sits in front of an MCP server and applies token validation and per-method scope checks."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,7 +50,7 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 # Pragmatic starter set: pycodestyle errors, pyflakes, isort, bugbear,
 # comprehensions, pyupgrade. Not exhaustive; tighten over time.
-select = ["E", "F", "I", "B", "C4"]
+select = ["E", "F", "I", "B", "C4", "UP"]
 # Long lines in tests are usually crafted tokens/payloads; don't fight them.
 ignore = ["E501"]
 
