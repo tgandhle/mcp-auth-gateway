@@ -6,6 +6,12 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.2.0] - 2026-06-29
+
+Hardening release: response-path streaming and an upstream response-size cap.
+
 ### Added
 - Streaming response pass-through with a size cap: upstream responses are now
   streamed through chunk by chunk instead of buffered (fixes SSE/chunked
