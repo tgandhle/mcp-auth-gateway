@@ -109,8 +109,11 @@ exhaust gateway or client memory. **Defense:** a configurable response cap
 `Content-Length` over the cap, the gateway returns `413` before streaming any
 body. If the response is chunked/streamed and exceeds the cap mid-stream, the
 gateway stops and terminates the connection (status and headers are already
-sent, so truncation is the only enforcement available at that point).
-**Verify:** `src/mcp_gateway/app.py`; `tests/test_app.py`
+sent, so truncation is the only enforcement available at that point). A
+truncated stream emits a second audit event (`stream_result =
+truncated_response_too_large`) so a SIEM can distinguish a capped response from
+a clean one; the initial "allowed" event alone cannot convey this. **Verify:**
+`src/mcp_gateway/app.py`; `src/mcp_gateway/audit.py`; `tests/test_app.py`
 (`test_oversized_content_length_rejected_413`, `test_midstream_cap_truncates`).
 
 ### Misconfiguration that silently weakens enforcement

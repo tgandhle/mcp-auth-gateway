@@ -269,19 +269,27 @@ def create_app(
             # once the running total exceeds it we stop yielding and let the
             # context manager close, which terminates the connection. The status
             # and headers are already sent at this point, so truncation is the
-            # only enforcement available mid-stream.
+            # only enforcement available mid-stream. We emit a second audit event
+            # on exit so a truncated response is distinguishable in a SIEM from a
+            # clean one (the initial "allowed" event cannot convey this).
             sent = 0
+            truncated = False
             try:
                 async for chunk in upstream.aiter_raw():
                     if cap > 0:
                         sent += len(chunk)
                         if sent > cap:
-                            # Stop; the partial body the client already has is
-                            # terminated by closing the upstream stream below.
+                            truncated = True
+                            # Stop; closing the upstream stream below terminates
+                            # the partial body the client already received.
                             break
                     yield chunk
             finally:
                 await upstream_cm.__aexit__(None, None, None)
+                audit.emit_stream_event(
+                    result="truncated_response_too_large" if truncated else "completed",
+                    bytes_streamed=sent,
+                )
 
         return StreamingResponse(
             body_iter(),

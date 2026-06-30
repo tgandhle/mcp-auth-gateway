@@ -46,6 +46,11 @@ class AuditRecord:
     held_scope_count: int = 0
     upstream_status: int | None = None
     latency_ms: float | None = None
+    # Set on a follow-up event after the response body has finished streaming,
+    # when something happened during streaming that the initial decision could
+    # not capture (e.g. the response was truncated for exceeding the size cap).
+    stream_result: str | None = None
+    bytes_streamed: int | None = None
     _scope_values: list[str] = field(default_factory=list)  # DEBUG-only
 
     def to_dict(self, include_scope_values: bool = False) -> dict:
@@ -64,6 +69,8 @@ class AuditRecord:
             "held_scope_count": self.held_scope_count,
             "upstream_status": self.upstream_status,
             "latency_ms": self.latency_ms,
+            "stream_result": self.stream_result,
+            "bytes_streamed": self.bytes_streamed,
         }
         if include_scope_values:
             d["held_scopes"] = self._scope_values
@@ -84,6 +91,29 @@ class AuditContext:
         line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         # Denied/rejected/error are warnings; allowed is info.
         if self.record.decision in ("denied", "rejected", "error"):
+            _logger.warning(line)
+        else:
+            _logger.info(line)
+
+    def emit_stream_event(self, result: str, bytes_streamed: int) -> None:
+        """Emit a second audit event after the response body has streamed.
+
+        The initial event records the authorization decision ("allowed") at the
+        moment the response starts. Once streaming is allowed, the status and
+        headers are already sent, so a later problem (notably truncation for
+        exceeding the response cap) cannot change that decision. This follow-up
+        event records what actually happened to the body so a SIEM can tell a
+        clean completion apart from a truncated one, which the first event
+        cannot convey on its own.
+        """
+        self.record.stream_result = result
+        self.record.bytes_streamed = bytes_streamed
+        self.record.latency_ms = round((time.monotonic() - self._start) * 1000, 2)
+        debug_on = _logger.isEnabledFor(logging.DEBUG)
+        payload = self.record.to_dict(include_scope_values=debug_on)
+        line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        # A truncated stream is a warning; a clean completion is info.
+        if result == "truncated_response_too_large":
             _logger.warning(line)
         else:
             _logger.info(line)
