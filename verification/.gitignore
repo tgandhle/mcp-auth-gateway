@@ -1,0 +1,4 @@
+# Generated throwaway verification material. Never commit.
+private_key.pem
+*.pem
+jwks.json
