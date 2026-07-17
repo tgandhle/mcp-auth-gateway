@@ -2,3 +2,6 @@
 private_key.pem
 *.pem
 jwks.json
+run_verification.ps1
+call.json
+list.json
