@@ -7,6 +7,13 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Local verification harness (`verification/`) and results doc (`VERIFICATION.md`):
+  scripts to stand up a local JWKS, stub upstream, and gateway with auth enabled,
+  and mint test tokens, plus a record of a manual run confirming the four
+  documented auth controls on `POST /mcp` (missing/malformed/expired token -> 401,
+  read-scoped token calling `tools/call` -> 403) and two positive controls. The
+  doc states plainly that this is local manual verification with self-issued
+  tokens against a dev instance, not an audit.
 - Stream-completion audit event: after a streamed response finishes, the gateway
   emits a second audit event recording whether the body completed cleanly or was
   truncated for exceeding the response cap (`stream_result`, `bytes_streamed`).
