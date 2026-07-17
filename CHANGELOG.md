@@ -7,6 +7,16 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Changed
+- JWKS handling now owns an explicit `kid`->key cache. Verification resolves the
+  token's `kid` from that in-memory map and touches the network only on a miss,
+  where a single-flight refresh is gated by the cooldown window. A flood of
+  distinct bogus `kid` values can no longer amplify into one outbound JWKS fetch
+  per token: fetches are bounded to the cold-start populate plus at most one
+  forced refresh per window. This replaces the previous approach, which capped
+  client rebuilds but left the underlying library free to fetch per unknown
+  `kid`. A new test counts fetches at the network seam (not client rebuilds) and
+  asserts the bound holds across 100 distinct bogus kids. `verify()` remains
+  synchronous; moving JWKS I/O off the request event loop is a separate change.
 - Corrected security-claim language to match what the code actually enforces,
   and added a "Known limitations" section to the README. Two docstring/comment
   claims were overstated: the JWKS `kid`-miss cooldown caps client *rebuilds*,
