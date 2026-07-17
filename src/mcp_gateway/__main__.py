@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from .app import create_app
 from .config import ConfigError, Settings, load_settings
 from .policy import ScopePolicy
+from .tool_policy import ToolPolicy
 from .verifier import JwksVerifier
 
 
@@ -20,6 +21,14 @@ def build() -> tuple[FastAPI, Settings]:
         ScopePolicy.from_file(settings.scope_policy_file)
         if settings.scope_policy_file
         else ScopePolicy.builtin()
+    )
+
+    # Tool-call authorization is opt-in: build a policy only when a file is
+    # configured. When None, create_app leaves tools/call to scope alone.
+    tool_policy = (
+        ToolPolicy.from_file(settings.tool_policy_file)
+        if settings.tool_policy_file
+        else None
     )
 
     verifier = None
@@ -36,7 +45,7 @@ def build() -> tuple[FastAPI, Settings]:
             min_refresh_interval=settings.jwks_min_refresh_interval,
         )
 
-    app = create_app(settings, verifier, policy)
+    app = create_app(settings, verifier, policy, tool_policy)
     return app, settings
 
 

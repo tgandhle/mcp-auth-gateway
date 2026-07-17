@@ -7,6 +7,17 @@ follow semantic versioning once a tagged release is cut.
 ## [Unreleased]
 
 ### Added
+- Tool-call authorization: per-tool allow-list enforcement on `tools/call` at
+  the proxy boundary, deny-by-default, with every decision logged (`tool_name`).
+  Configured via `GATEWAY_TOOL_POLICY_FILE` pointing at a JSON `allowed_tools`
+  list. An allow-listed tool is forwarded; an unlisted tool is denied with
+  `403 tool_not_allowed`; a `tools/call` with no string `params.name` is
+  rejected with `400 invalid_tool_call`. The check runs after the scope check
+  (scope is the outer gate). Opt-in and backward-compatible: with the variable
+  unset the layer is inactive and `tools/call` is governed by scope alone, so
+  upgrading without configuring a policy changes nothing. Backed by unit tests
+  (`ToolPolicy`) and end-to-end proxy tests covering allow, deny, unknown-tool,
+  malformed-name, case-sensitivity, scope-precedence, and the opt-in default.
 - Local verification harness (`verification/`) and results doc (`VERIFICATION.md`):
   scripts to stand up a local JWKS, stub upstream, and gateway with auth enabled,
   and mint test tokens, plus a record of a manual run confirming the four

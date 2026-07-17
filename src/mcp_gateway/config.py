@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     # If unset, a built-in default policy is used.
     scope_policy_file: str | None = None
 
+    # --- Tool-call authorization policy ---
+    # Path to a JSON file with an ``allowed_tools`` list naming the tools a
+    # caller may invoke via ``tools/call``. This layer is opt-in: when unset,
+    # tool-call authorization is not applied and tools/call is governed by scope
+    # only (backward-compatible). When set, the allow-list is enforced with
+    # deny-by-default: a tool not named is refused.
+    tool_policy_file: str | None = None
+
     # Require auth on the proxied MCP endpoint. Disable only for local dev.
     require_auth: bool = True
 
@@ -133,6 +141,12 @@ class Settings(BaseSettings):
         if self.scope_policy_file and not os.path.isfile(self.scope_policy_file):
             problems.append(
                 f"GATEWAY_SCOPE_POLICY_FILE points to a missing file: {self.scope_policy_file}"
+            )
+
+        # Same for the optional tool policy file: if named, it must exist now.
+        if self.tool_policy_file and not os.path.isfile(self.tool_policy_file):
+            problems.append(
+                f"GATEWAY_TOOL_POLICY_FILE points to a missing file: {self.tool_policy_file}"
             )
 
         # Numeric sanity. These parse as ints/floats but are nonsensical at or

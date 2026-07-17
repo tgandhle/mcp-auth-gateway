@@ -1,0 +1,7 @@
+{
+  "allowed_tools": [
+    "read_file",
+    "list_directory",
+    "search_documents"
+  ]
+}

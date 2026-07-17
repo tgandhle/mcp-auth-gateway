@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .audit import AuditContext, new_request_id
 from .config import Settings
 from .policy import ScopePolicy
+from .tool_policy import ToolPolicy
 from .verifier import JwksVerifier, TokenError, VerifiedToken
 
 # JSON-RPC / HTTP constants
@@ -49,6 +50,10 @@ _SPOOFABLE_IDENTITY_HEADERS = {
 @dataclass
 class JsonRpcParse:
     method: str | None = None
+    # For a tools/call request, the tool named in params.name. None otherwise.
+    # A tools/call whose name is missing or not a string is a parse error (the
+    # request cannot be resolved to a tool), surfaced via ``error`` below.
+    tool_name: str | None = None
     error: str | None = None
     error_code: str = "invalid_jsonrpc"
 
@@ -87,6 +92,15 @@ def _forbidden(detail: str, required: list[str]) -> JSONResponse:
     )
 
 
+def _forbidden_tool(tool: str, detail: str) -> JSONResponse:
+    # Distinct from insufficient_scope: the token's scopes were sufficient to
+    # reach tools/call, but this specific tool is not permitted by policy.
+    return JSONResponse(
+        status_code=403,
+        content={"error": "tool_not_allowed", "detail": detail, "tool": tool},
+    )
+
+
 def _build_timeout(settings: Settings) -> httpx.Timeout:
     base = settings.upstream_timeout
     return httpx.Timeout(
@@ -101,7 +115,12 @@ def create_app(
     settings: Settings,
     verifier: JwksVerifier | None,
     policy: ScopePolicy,
+    tool_policy: ToolPolicy | None = None,
 ) -> FastAPI:
+    # tool_policy is opt-in. When None, tool-call authorization is not applied
+    # and tools/call is governed by scope alone (backward-compatible). When
+    # provided, the allow-list is enforced with deny-by-default after the scope
+    # check passes.
     client = httpx.AsyncClient(timeout=_build_timeout(settings))
 
     @asynccontextmanager
@@ -201,6 +220,7 @@ def create_app(
             return JSONResponse(status_code=400, content={"error": parsed.error_code, "detail": parsed.error})
 
         audit.record.method = parsed.method
+        audit.record.tool_name = parsed.tool_name
         decision = policy.check(parsed.method, held)  # type: ignore[arg-type]
         audit.record.required_scopes = sorted(decision.required)
         if not decision.allowed:
@@ -209,6 +229,36 @@ def create_app(
             audit.record.reason = decision.reason
             audit.emit()
             return _forbidden(decision.reason, sorted(decision.required))
+
+        # 2b. Tool-call authorization (opt-in). Only applies to tools/call and
+        #     only when a tool policy is configured. Runs after the scope check
+        #     so a token must first be entitled to call tools/call at all; this
+        #     narrows *which* tool. Fails closed on both axes:
+        #       - a tools/call with no resolvable string params.name is a
+        #         malformed request the policy can't evaluate -> 400
+        #       - a well-named tool not on the allow-list -> 403
+        #     Neither is ever forwarded. When no tool policy is set this whole
+        #     block is skipped and tools/call behaves as it did before.
+        if tool_policy is not None and parsed.method == "tools/call":
+            if parsed.tool_name is None:
+                audit.record.decision = "rejected"
+                audit.record.error_code = "invalid_tool_call"
+                audit.record.reason = "tools/call request missing a string 'params.name'"
+                audit.emit()
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_tool_call",
+                        "detail": "tools/call request missing a string 'params.name'",
+                    },
+                )
+            tdecision = tool_policy.check(parsed.tool_name)
+            if not tdecision.allowed:
+                audit.record.decision = "denied"
+                audit.record.error_code = "tool_not_allowed"
+                audit.record.reason = tdecision.reason
+                audit.emit()
+                return _forbidden_tool(parsed.tool_name, tdecision.reason)
 
         # 3. Reverse-proxy. Strip every inbound identity-bearing header before
         #    injecting verified identity, so a client can't spoof it.
@@ -330,5 +380,17 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     method = data.get("method")
     if not isinstance(method, str) or not method:
         return JsonRpcParse(error="JSON-RPC request missing a string 'method'", error_code="invalid_jsonrpc")
+
+    # For tools/call, extract the tool name from params.name when present. We do
+    # NOT reject a missing/non-string name here: that check belongs to the
+    # tool-authorization layer, which is opt-in. When no tool policy is
+    # configured the gateway must treat tools/call exactly as before (name not
+    # required), preserving backward compatibility. Whether a missing name is a
+    # 400 is decided later, only when a tool policy is active.
+    if method == "tools/call":
+        params = data.get("params")
+        name = params.get("name") if isinstance(params, dict) else None
+        tool = name if isinstance(name, str) and name else None
+        return JsonRpcParse(method=method, tool_name=tool)
 
     return JsonRpcParse(method=method)

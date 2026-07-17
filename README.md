@@ -61,6 +61,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS refreshes on a `kid` miss; default `10`. Caps JWKS refetch rate under unknown-`kid` traffic |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
+| `GATEWAY_TOOL_POLICY_FILE` | no | JSON tool allow-list; enables per-tool authorization on `tools/call`. Unset means tool authorization is off (scope only) |
 | `GATEWAY_REQUIRE_AUTH` | no | Default `true`; set `false` only for local dev |
 | `GATEWAY_HOST` / `GATEWAY_PORT` | no | Default `127.0.0.1:8080` |
 | `GATEWAY_PUBLIC_BASE_URL` | no | External URL (e.g. `https://mcp.example.com`) for metadata/`WWW-Authenticate` when behind TLS or a load balancer |
@@ -106,6 +107,53 @@ first request.
 A key ending in `/` is a prefix rule covering every method beneath it. An exact
 method rule overrides a prefix rule. All scopes listed for a rule are required
 (AND).
+
+## Tool-call authorization
+
+Scope policy controls whether a token may call `tools/call` at all. Tool-call
+authorization is a second, narrower axis: given that a caller may invoke tools,
+*which* tools may it invoke? It enforces per-tool authorization on the proxy
+boundary at the point the gateway parses a `tools/call` request.
+
+The policy is an allow-list. A tool is permitted only if its name appears in
+`allowed_tools`; every other tool is denied. Allow-list-only is deliberate: it
+makes deny-by-default total and verifiable by reading the file, which is the
+posture you want for autonomous agents (enumerate what may run, refuse the
+rest).
+
+```json
+{
+  "allowed_tools": [
+    "read_file",
+    "list_directory",
+    "search_documents"
+  ]
+}
+```
+
+Point the gateway at it with `GATEWAY_TOOL_POLICY_FILE=examples/tool-policy.json`.
+
+Behavior, when a tool policy is configured:
+
+- A `tools/call` naming an allow-listed tool is forwarded (subject to scope
+  passing first).
+- A `tools/call` naming a tool not on the allow-list is denied with
+  `403 tool_not_allowed` and never forwarded.
+- A `tools/call` whose `params.name` is missing or not a string cannot be
+  resolved to a tool and is rejected with `400 invalid_tool_call`. This is a
+  malformed request, distinct from an authorization denial.
+- Matching is exact and case-sensitive: `read_file` and `Read_File` are
+  different tools.
+
+This layer is **opt-in and backward-compatible**. With `GATEWAY_TOOL_POLICY_FILE`
+unset, tool-call authorization is not applied and `tools/call` is governed by
+scope alone, exactly as before. Enabling it is a deliberate act; upgrading
+without setting the variable changes nothing.
+
+The check runs after the scope check, so scope is the outer gate: a token
+lacking `mcp:invoke` is stopped with `insufficient_scope` before the tool
+allow-list is consulted. Every tool decision is written to the audit log with
+the `tool_name` and the decision, alongside the existing scope decision fields.
 
 ## Tests
 

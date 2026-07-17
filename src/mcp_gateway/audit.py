@@ -39,6 +39,10 @@ class AuditRecord:
     issuer: str | None = None
     audience: str | None = None
     method: str | None = None
+    # For a tools/call request, the specific tool named in params.name. None for
+    # every other method. Recorded so a SIEM can see which tool was authorized
+    # or denied, not just that a tools/call happened.
+    tool_name: str | None = None
     decision: str = "pending"          # allowed | denied | rejected | error
     error_code: str | None = None
     reason: str | None = None
@@ -62,6 +66,7 @@ class AuditRecord:
             "issuer": self.issuer,
             "audience": self.audience,
             "method": self.method,
+            "tool_name": self.tool_name,
             "decision": self.decision,
             "error_code": self.error_code,
             "reason": self.reason,
