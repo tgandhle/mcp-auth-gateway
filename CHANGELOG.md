@@ -6,6 +6,16 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+### Changed
+- Corrected security-claim language to match what the code actually enforces,
+  and added a "Known limitations" section to the README. Two docstring/comment
+  claims were overstated: the JWKS `kid`-miss cooldown caps client *rebuilds*,
+  not the underlying library's fetch on an unknown `kid` (so unknown-`kid`
+  traffic is not yet fully bounded), and inbound identity headers are stripped
+  via a non-exhaustive denylist rather than "every" identity header. No behavior
+  change; this aligns the documentation with the implementation ahead of the
+  hardening fixes that address the underlying gaps.
+
 ### Added
 - Tool-call authorization: per-tool allow-list enforcement on `tools/call` at
   the proxy boundary, deny-by-default, with every decision logged (`tool_name`).

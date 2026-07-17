@@ -260,8 +260,14 @@ def create_app(
                 audit.emit()
                 return _forbidden_tool(parsed.tool_name, tdecision.reason)
 
-        # 3. Reverse-proxy. Strip every inbound identity-bearing header before
-        #    injecting verified identity, so a client can't spoof it.
+        # 3. Reverse-proxy. Strip a known set of inbound identity-bearing
+        #    headers (see _SPOOFABLE_IDENTITY_HEADERS) before injecting verified
+        #    identity, so a client can't spoof those specific conventions. This
+        #    is a denylist and therefore not exhaustive: an upstream that trusts
+        #    a header not in that set (e.g. Remote-User, X-Auth-Request-User,
+        #    a vendor OIDC header) would still receive it. Configure the upstream
+        #    to trust only the gateway-generated X-Forwarded-* identity headers;
+        #    an outbound allowlist is a tracked hardening item.
         fwd_headers = {
             k: v for k, v in request.headers.items()
             if k.lower() not in _HOP_BY_HOP

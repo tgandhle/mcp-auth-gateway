@@ -12,9 +12,14 @@ Design notes (these are the things an interviewer will probe):
   fact, so a malformed-but-signed token can't slip a wrong ``aud`` through.
 - ``exp``/``nbf``/``iat`` are enforced with a small configurable leeway.
 - JWKS is cached with a TTL. On a ``kid`` miss we force-refresh once (handles
-  key rotation) before failing closed, but a forced refresh happens at most
-  once per a configurable cooldown window, so bogus-kid traffic cannot trigger
-  an unbounded number of JWKS fetches against the authorization server.
+  key rotation) before failing closed, and the gateway rebuilds its JWKS client
+  at most once per a configurable cooldown window. Note the current limitation:
+  the cooldown caps how often the gateway *rebuilds* its client, but the
+  underlying PyJWK client still performs its own network fetch on an unknown
+  ``kid`` within the window, so this does not yet fully bound outbound JWKS
+  requests under a flood of distinct bogus ``kid`` values. Fully capping fetches
+  (an explicitly owned kid->key map with single-flight refresh) is tracked as a
+  hardening item.
 """
 
 from __future__ import annotations
@@ -83,11 +88,12 @@ class JwksVerifier:
         self._algs = list(allowed_algorithms)
         self._leeway = leeway_seconds
         self._ttl = cache_ttl
-        # Minimum seconds between forced JWKS refreshes. A kid miss forces at
-        # most one refresh per this interval; further misses within the window
-        # fail closed without another fetch. This caps the refresh rate so a
-        # caller sending many tokens with bogus/distinct kids cannot turn the
-        # gateway into a JWKS-fetch amplifier against the authorization server.
+        # Minimum seconds between forced JWKS client rebuilds. A kid miss forces
+        # at most one rebuild per this interval; further misses within the window
+        # do not rebuild. Note this caps rebuilds, not the underlying PyJWK
+        # client's own network fetch on an unknown kid, so it does not by itself
+        # fully bound outbound JWKS requests under bogus-kid floods (see the
+        # module docstring). Tracked as a hardening item.
         self._min_refresh_interval = min_refresh_interval
 
         self._lock = threading.Lock()
@@ -101,10 +107,11 @@ class JwksVerifier:
         with self._lock:
             now = time.monotonic()
             ttl_expired = (now - self._last_refresh) > self._ttl
-            # A forced refresh (kid miss) is honored only if we have not
-            # refreshed within the cooldown window. This is what caps the
-            # JWKS-fetch rate under a flood of bogus-kid tokens. A TTL-expired
-            # refresh is always allowed; it is naturally rate-limited by the TTL.
+            # A forced rebuild (kid miss) is honored only if we have not rebuilt
+            # within the cooldown window. This caps how often we rebuild the
+            # client; it does not cap the underlying client's own fetch on an
+            # unknown kid (see module docstring). A TTL-expired rebuild is always
+            # allowed; it is naturally rate-limited by the TTL.
             force_allowed = force and (now - self._last_refresh) >= self._min_refresh_interval
             if force_allowed or ttl_expired:
                 # Rebuild the client to drop any stale cached keys.
