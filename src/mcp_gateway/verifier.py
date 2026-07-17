@@ -107,8 +107,13 @@ class JwksVerifier:
         Kept deliberately small so the fetch is the only thing that touches the
         network and is trivially observable.
         """
+        # Enforce http/https explicitly: urlopen otherwise accepts file:// and
+        # custom schemes, which must never be followed for a JWKS URL. This is
+        # the guard bandit B310 asks for.
+        if not self._jwks_url.lower().startswith(("http://", "https://")):
+            raise TokenError(f"refusing non-http(s) JWKS URL scheme: {self._jwks_url!r}")
         req = urllib.request.Request(self._jwks_url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:  # nosec B310
             return json.loads(resp.read())
 
     def _refresh_keys(self) -> None:
