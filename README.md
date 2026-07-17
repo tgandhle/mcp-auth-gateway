@@ -16,9 +16,13 @@ point your MCP clients at the gateway, point the gateway at the server.
   (RS/ES/PS); `none` and HMAC algs are refused at construction time, which
   closes the algorithm-confusion class of bypass.
 - **Key rotation.** Selects the verification key by the token's `kid`. On a
-  `kid` miss it force-refreshes the JWKS once before failing closed, rate-limited
-  to at most one forced refresh per cooldown window so unknown-`kid` traffic
-  cannot amplify into repeated JWKS fetches.
+  `kid` miss it force-refreshes the JWKS once before failing closed, and rebuilds
+  its JWKS client at most once per cooldown window. Known limitation: the
+  cooldown caps client *rebuilds*, not the underlying JWKS-library fetch on an
+  unknown `kid`, so unknown-`kid` traffic is not yet fully bounded against the
+  authorization server. Fully capping outbound fetches (an explicitly owned
+  `kid`->key map with single-flight refresh, and moving JWKS I/O off the request
+  event loop) is a tracked hardening item.
 - **Per-method scope enforcement.** MCP methods (`tools/call`, `tools/list`,
   `resources/read`, ...) are mapped to required scopes by a policy. Read vs.
   invoke is separated by default. Unknown methods are denied by default.
@@ -58,7 +62,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
 | `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
 | `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
-| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS refreshes on a `kid` miss; default `10`. Caps JWKS refetch rate under unknown-`kid` traffic |
+| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS client rebuilds on a `kid` miss; default `10`. Caps rebuild cadence (see the key-rotation note on its limits; it does not yet fully bound outbound fetches) |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_TOOL_POLICY_FILE` | no | JSON tool allow-list; enables per-tool authorization on `tools/call`. Unset means tool authorization is off (scope only) |
@@ -182,6 +186,45 @@ cannot invoke a tool).
   `GATEWAY_PUBLIC_BASE_URL` when set, and fall back to the bind host/port. Set
   it when running behind TLS or a load balancer.
 
+### Known limitations (tracked hardening items)
+
+These are known gaps, stated plainly so the security posture isn't overstated.
+Each is a tracked item, not a claimed guarantee.
+
+- **JWKS fetch bounding.** The `kid`-miss cooldown caps how often the gateway
+  rebuilds its JWKS client, but the underlying JWKS library still fetches on an
+  unknown `kid` within the window, so outbound JWKS requests under a flood of
+  distinct bogus `kid` values are not yet fully bounded. JWKS verification also
+  runs synchronously on the request path, so a slow authorization server can
+  block the event loop. Fix: an explicitly owned `kid`->key map with
+  single-flight refresh, and async/off-loop JWKS I/O.
+- **Request-size limit.** An oversized numeric `Content-Length` is rejected
+  before the body is read, but a chunked or unlabeled body is buffered fully
+  before the size check, so the limit is not a hard memory bound in those cases.
+  Fix: enforce the cap while streaming the request. Pair with an ingress body
+  limit regardless.
+- **Outbound identity headers.** Inbound identity headers are stripped via a
+  denylist of known conventions, which is not exhaustive. Configure the upstream
+  to trust only the gateway-generated `X-Forwarded-*` identity headers. Fix: an
+  outbound allowlist forwarding only transport-required headers.
+- **MCP Origin validation.** The gateway does not yet validate the `Origin`
+  header (the MCP spec DNS-rebinding defense for Streamable HTTP). Fix: an
+  allowed-origins check returning `403` on an unapproved present origin.
+- **Plaintext JWKS URL.** `GATEWAY_JWKS_URL` currently permits `http://`. Use an
+  `https://` endpoint; a future change will require TLS by default and allow
+  plaintext only for loopback/dev.
+- **Readiness vs. liveness.** `/healthz` serves both and always returns ok, so a
+  pod can be marked ready before it can retrieve verification keys. Fix: split
+  `/livez` (process alive) from `/readyz` (config, policy, and a recent JWKS
+  retrieval).
+- **Kubernetes trust boundary.** The sample `NetworkPolicy` selects on the pod
+  label `app: gateway`; it authenticates labels, not workload identity. Treat it
+  as network segmentation, not workload authentication; pair with namespace
+  RBAC, admission control, and mesh mTLS/SPIFFE.
+- **Tool policy is opt-in.** With no `GATEWAY_TOOL_POLICY_FILE` set, a token
+  holding `mcp:invoke` may call any tool the upstream exposes. This is a
+  deliberate backward-compatible default; configure a tool policy to enforce
+  per-tool least privilege.
 ## Security
 
 The [threat model](docs/THREAT-MODEL.md) states what the gateway defends
