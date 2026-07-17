@@ -62,7 +62,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
 | `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
 | `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
-| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS client rebuilds on a `kid` miss; default `10`. Caps rebuild cadence (see the key-rotation note on its limits; it does not yet fully bound outbound fetches) |
+| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS client rebuilds on a `kid` miss; default `10`. Caps rebuild cadence (see the key-rotation note on its limits, it does not yet fully bound outbound fetches) |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_TOOL_POLICY_FILE` | no | JSON tool allow-list; enables per-tool authorization on `tools/call`. Unset means tool authorization is off (scope only) |
@@ -204,27 +204,31 @@ Each is a tracked item, not a claimed guarantee.
   Fix: enforce the cap while streaming the request. Pair with an ingress body
   limit regardless.
 - **Outbound identity headers.** Inbound identity headers are stripped via a
-  denylist of known conventions, which is not exhaustive. Configure the upstream
-  to trust only the gateway-generated `X-Forwarded-*` identity headers. Fix: an
+  denylist of known conventions, which is not exhaustive. An upstream that
+  trusts a header outside that set could be misled. Configure the upstream to
+  trust only the gateway-generated `X-Forwarded-*` identity headers. Fix: an
   outbound allowlist forwarding only transport-required headers.
 - **MCP Origin validation.** The gateway does not yet validate the `Origin`
-  header (the MCP spec DNS-rebinding defense for Streamable HTTP). Fix: an
+  header (the MCP spec's DNS-rebinding defense for Streamable HTTP). Fix: an
   allowed-origins check returning `403` on an unapproved present origin.
-- **Plaintext JWKS URL.** `GATEWAY_JWKS_URL` currently permits `http://`. Use an
-  `https://` endpoint; a future change will require TLS by default and allow
+- **Plaintext JWKS URL.** `GATEWAY_JWKS_URL` currently permits `http://`. Use
+  an `https://` endpoint; a future change will require TLS by default and allow
   plaintext only for loopback/dev.
 - **Readiness vs. liveness.** `/healthz` serves both and always returns ok, so a
   pod can be marked ready before it can retrieve verification keys. Fix: split
   `/livez` (process alive) from `/readyz` (config, policy, and a recent JWKS
   retrieval).
 - **Kubernetes trust boundary.** The sample `NetworkPolicy` selects on the pod
-  label `app: gateway`; it authenticates labels, not workload identity. Treat it
-  as network segmentation, not workload authentication; pair with namespace
-  RBAC, admission control, and mesh mTLS/SPIFFE.
+  label `app: gateway`; it authenticates labels, not workload identity. Anyone
+  able to create pods in the namespace with that label could reach the upstream.
+  Treat it as network segmentation, not workload authentication; pair with
+  namespace RBAC, admission control, and mesh mTLS/SPIFFE for real workload
+  identity.
 - **Tool policy is opt-in.** With no `GATEWAY_TOOL_POLICY_FILE` set, a token
   holding `mcp:invoke` may call any tool the upstream exposes. This is a
-  deliberate backward-compatible default; configure a tool policy to enforce
-  per-tool least privilege.
+  deliberate backward-compatible default, not a defect; configure a tool policy
+  to enforce per-tool least privilege.
+
 ## Security
 
 The [threat model](docs/THREAT-MODEL.md) states what the gateway defends
