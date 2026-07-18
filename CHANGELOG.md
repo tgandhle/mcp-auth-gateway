@@ -6,7 +6,50 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+### Security
+
+- Off-loop, lock-narrowed JWKS verification. Token verification now runs in a
+  worker thread, and the JWKS fetch happens outside the key-cache lock with
+  single-flight coordination: exactly one thread refreshes at a time, cached
+  keys keep verifying during an in-flight refresh (a TTL-stale key is served
+  rather than held hostage to a slow authorization server), and only requests
+  whose `kid` is entirely absent wait. This closes the deferred Review 1/3
+  availability finding: previously the synchronous fetch ran on the event loop
+  under the lock, so an unauthenticated caller (the token header is peeked
+  before signature verification) could stall every in-flight request for up to
+  the fetch timeout once per cooldown window whenever the authorization server
+  was slow. A failed fetch now surfaces as a 401 `TokenError` instead of an
+  unhandled exception, and starts the cooldown so an unreachable authorization
+  server is retried once per window, not once per request. One accounting
+  change: a cold-start miss performs one fetch, not two (the old
+  populate-then-forced-refresh double fetch could not observe different server
+  state). (`tests/test_verifier_concurrency.py`,
+  `tests/test_origin_and_offloop.py`; existing fetch-bound tests unchanged.)
+- Origin validation (MCP Streamable HTTP DNS-rebinding defense). A request
+  carrying an `Origin` header is rejected with `403 origin_not_allowed` unless
+  the origin is listed in `GATEWAY_ALLOWED_ORIGINS` (default: empty, so every
+  present `Origin` is rejected; absent `Origin`, i.e. non-browser MCP clients,
+  always passes). The check runs before the body is read or the token is
+  verified, the origin value is recorded in the audit log but never echoed to
+  the caller, and config entries are validated at startup.
+  (`tests/test_origin_and_offloop.py`.)
+- Generic 401 detail. Invalid-token responses no longer echo the verifier's
+  failure reason (signature vs issuer vs expiry vs unknown `kid`), which was a
+  fingerprinting aid for probing the validation surface; the body says
+  `invalid bearer token`, the RFC 6750 `error="invalid_token"` code rides in
+  `WWW-Authenticate`, and the specific reason lives in the audit record only.
+  (`tests/test_origin_and_offloop.py`; `VERIFICATION.md` carries a dated note.)
+- Supply-chain pinning in CI. Every third-party GitHub Action is pinned to a
+  commit SHA (tag kept as a comment), resolved from the GitHub API at pin
+  time, and the kubeconform image is pinned to `v0.8.0` instead of `:latest`
+  (digest pinning requires recording the digest from a machine with ghcr.io
+  access; the inspect command is noted in the workflow).
+
 ### Fixed
+
+- `/.well-known/oauth-protected-resource` `scopes_supported` now includes
+  scopes named in a policy's `default` set, not just its `rules`.
+  (`tests/test_origin_and_offloop.py`.)
 
 - MCP lifecycle coverage in the scope policies. The builtin policy (and
   `examples/scope-policy.json`) had no rule for the `notifications/*` family,

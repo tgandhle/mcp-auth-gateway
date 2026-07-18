@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     # deny-by-default: a tool not named is refused.
     tool_policy_file: str | None = None
 
+    # --- Origin validation (MCP Streamable HTTP DNS-rebinding defense) ---
+    # Origins (scheme://host[:port]) allowed to call the proxied MCP endpoint
+    # from browser contexts. A request with no Origin header always passes
+    # (non-browser MCP clients don't send one). A present Origin passes only
+    # if listed here; the empty default rejects every present Origin, which is
+    # deny-by-default. The literal string "null" may be listed to permit
+    # sandboxed/opaque origins, which is rarely what you want.
+    allowed_origins: list[str] = Field(default_factory=list)
+
     # Require auth on the proxied MCP endpoint. Disable only for local dev.
     require_auth: bool = True
 
@@ -184,6 +193,21 @@ class Settings(BaseSettings):
         ):
             if value is not None and value <= 0:
                 problems.append(f"{name} must be > 0 when set, got {value}")
+
+        # Allowed origins must look like origins: a scheme + host, no path.
+        for o in self.allowed_origins:
+            v = o.strip().rstrip("/").lower()
+            if v == "null":
+                continue
+            if not v.startswith(("http://", "https://")):
+                problems.append(
+                    f"GATEWAY_ALLOWED_ORIGINS entries must start with http:// or https:// "
+                    f"(or be the literal \"null\"), got {o!r}"
+                )
+            elif "/" in v.split("://", 1)[1]:
+                problems.append(
+                    f"GATEWAY_ALLOWED_ORIGINS entries must not contain a path, got {o!r}"
+                )
 
         # public_base_url, when set, must carry a scheme or the metadata and
         # WWW-Authenticate URLs built from it will be malformed.

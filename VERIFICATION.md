@@ -82,3 +82,13 @@ See [`verification/README.md`](verification/README.md). The harness generates a
 throwaway key, serves a local JWKS and stub upstream, starts the gateway with
 auth enabled, mints the three test tokens, and lets you drive the six requests
 above with curl.
+
+## Post-run change note (2026-07-18)
+
+Invalid-token 401 responses now return a generic body
+(`{"error":"unauthorized","detail":"invalid bearer token"}`) with the RFC 6750
+`error="invalid_token"` code in `WWW-Authenticate`; the specific verifier
+failure reason is recorded in the audit log only. Rows 2-3 above show the
+pre-change bodies from the original manual run and are kept as the historical
+record. Status codes are unchanged, and `tests/test_origin_and_offloop.py`
+pins the new bodies.

@@ -17,8 +17,17 @@ Design notes (these are the things an interviewer will probe):
   rotation); further misses within the window fail closed with no network call.
   Crucially, the network fetch is bounded by *our* cooldown, not delegated to a
   library that would refetch per unknown ``kid``: a flood of distinct bogus
-  ``kid`` values cannot amplify into one outbound JWKS request per token. A
-  single-flight lock ensures concurrent misses collapse into one fetch.
+  ``kid`` values cannot amplify into one outbound JWKS request per token.
+- The fetch happens OUTSIDE the cache lock, with single-flight coordination:
+  exactly one thread performs an in-flight refresh, and other verifications
+  are never blocked by it. Cached keys keep verifying during a refresh (a key
+  that is merely past its TTL is served stale rather than held hostage to a
+  slow authorization server; its replacement is at most one fetch away). The
+  proxy calls ``verify()`` from a worker thread, so a slow JWKS endpoint can
+  no longer stall the event loop; it delays only the requests that genuinely
+  need the new key. A failed fetch surfaces as a ``TokenError`` (401), not an
+  unhandled exception, and starts the cooldown so a down authorization server
+  is not hammered once per request.
 """
 
 from __future__ import annotations
@@ -94,11 +103,17 @@ class JwksVerifier:
         self._fetch_timeout = fetch_timeout
 
         self._lock = threading.Lock()
+        # Signalled when an in-flight refresh finishes (success or failure).
+        self._refresh_done = threading.Condition(self._lock)
+        # True while exactly one thread is fetching the JWKS. Guarded by _lock.
+        self._refreshing = False
         # Our owned cache: kid -> PyJWK. Empty until the first fetch. A fetch is
         # lazy (on first verify) so construction does no network I/O.
         self._keys: dict[str, PyJWK] = {}
-        # monotonic time of the last successful (or attempted) fetch. Set to a
-        # sentinel far in the past so the first miss is always allowed to fetch.
+        # monotonic time of the last fetch attempt (success or failure). Set to
+        # a sentinel far in the past so the first miss is always allowed to
+        # fetch. Updating it on failure too means a down authorization server
+        # is retried at most once per cooldown window, not once per request.
         self._last_fetch = float("-inf")
     def _fetch_jwks(self) -> dict:
         """Fetch and return the raw JWKS document. The single network seam.
@@ -116,50 +131,84 @@ class JwksVerifier:
         with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:  # nosec B310
             return json.loads(resp.read())
 
-    def _refresh_keys(self) -> None:
-        """Fetch the JWKS and replace the owned key map. Caller holds the lock."""
-        raw = self._fetch_jwks()
-        keyset = PyJWKSet.from_dict(raw)
-        self._keys = {k.key_id: k for k in keyset.keys if k.key_id}
-        self._last_fetch = time.monotonic()
-
     def _resolve_key(self, kid: str) -> PyJWK:
-        """Return the signing key for ``kid`` from the owned cache, refreshing
-        at most once per cooldown window on a miss. Fails closed.
+        """Return the signing key for ``kid``, refreshing at most once per
+        cooldown window on a miss. Fails closed. Thread-safe.
 
-        Network access happens only when: the cache is cold (no fetch yet), the
-        TTL has expired, or a miss occurs and the cooldown has elapsed. A miss
-        inside the cooldown returns no key and performs no fetch, which is what
-        bounds bogus-kid floods.
+        Concurrency model:
+        - Fast path: a cached, TTL-fresh key is returned under the lock with no
+          network and no waiting, even while another thread is mid-refresh.
+        - Exactly one thread performs a refresh at a time (single-flight); the
+          network I/O runs outside the lock so it never blocks the fast path.
+        - While a refresh is in flight, a cached-but-stale key is served rather
+          than waited on: it was valid moments ago and its replacement lands in
+          seconds, so availability wins over strict freshness. Only callers
+          whose ``kid`` is entirely absent wait for the in-flight refresh.
+        - A miss inside the cooldown window fails closed with no network call,
+          which is what bounds bogus-``kid`` floods. Fetch failures raise
+          ``TokenError`` and start the cooldown, so an unreachable
+          authorization server is retried once per window, not per request.
         """
         with self._lock:
             now = time.monotonic()
             cold = self._last_fetch == float("-inf")
-            ttl_expired = (not cold) and (now - self._last_fetch) > self._ttl
-
-            # Populate on cold start or when the TTL has lapsed. Both are
-            # naturally rate-limited (once at start; once per TTL).
-            if cold or ttl_expired:
-                self._refresh_keys()
-
+            fresh = (not cold) and (now - self._last_fetch) <= self._ttl
             key = self._keys.get(kid)
-            if key is not None:
+            if key is not None and fresh:
                 return key
 
-            # Miss. Allow exactly one forced refresh per cooldown window to pick
-            # up key rotation. Inside the window, fail closed with no network.
-            # Recompute the clock: a cold/TTL populate above may have advanced
-            # _last_fetch past the `now` captured at entry, which would make the
-            # elapsed comparison negative and wrongly suppress the refresh.
-            now = time.monotonic()
-            cooldown_elapsed = (now - self._last_fetch) >= self._min_refresh_interval
-            if cooldown_elapsed:
-                self._refresh_keys()
+            # A refresh is needed (cold cache, TTL lapsed, or kid miss).
+            while self._refreshing:
+                # Another thread is already fetching. Serve a cached (possibly
+                # stale) key instead of waiting; only a true miss waits.
+                if key is not None:
+                    return key
+                if not self._refresh_done.wait(timeout=self._fetch_timeout + 1.0):
+                    raise TokenError("signing key refresh timed out")
                 key = self._keys.get(kid)
                 if key is not None:
                     return key
 
-            raise TokenError("no matching signing key")
+            # No refresh in flight. May this thread start one? Recompute the
+            # clock: time passed while waiting, and a completed refresh above
+            # advanced _last_fetch.
+            now = time.monotonic()
+            cold = self._last_fetch == float("-inf")
+            ttl_expired = (not cold) and (now - self._last_fetch) > self._ttl
+            cooldown_elapsed = (now - self._last_fetch) >= self._min_refresh_interval
+            if not (cold or ttl_expired or cooldown_elapsed):
+                if key is not None:
+                    return key  # stale hit inside the cooldown: still trusted
+                raise TokenError("no matching signing key")
+            self._refreshing = True
+
+        # ---- network I/O, deliberately outside the lock ---------------------
+        new_keys: dict[str, PyJWK] | None = None
+        error: TokenError | None = None
+        try:
+            raw = self._fetch_jwks()
+            keyset = PyJWKSet.from_dict(raw)
+            new_keys = {k.key_id: k for k in keyset.keys if k.key_id}
+        except TokenError as exc:
+            error = exc
+        except Exception as exc:  # URLError, timeout, bad JSON, bad JWKS shape
+            error = TokenError(f"JWKS retrieval failed: {type(exc).__name__}")
+        finally:
+            with self._lock:
+                self._refreshing = False
+                self._last_fetch = time.monotonic()
+                if new_keys is not None:
+                    self._keys = new_keys
+                self._refresh_done.notify_all()
+
+        if error is not None:
+            raise error
+        with self._lock:
+            key = self._keys.get(kid)
+        if key is not None:
+            return key
+        raise TokenError("no matching signing key")
+
     def verify(self, token: str) -> VerifiedToken:
         if not token:
             raise TokenError("empty token")

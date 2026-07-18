@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from .audit import AuditContext, new_request_id
 from .config import Settings
@@ -69,6 +70,13 @@ class JsonRpcParse:
     error_code: str = "invalid_jsonrpc"
 
 
+def _normalize_origin(origin: str) -> str:
+    """Case-insensitive scheme/host comparison; browsers send lowercase but
+    config files are typed by humans. Trailing slashes are stripped because
+    an Origin never carries a path."""
+    return origin.strip().rstrip("/").lower()
+
+
 def _bearer_token(request: Request) -> str:
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
@@ -86,12 +94,21 @@ def _resource_metadata_url(settings: Settings) -> str:
     return f"{_base_url(settings)}/.well-known/oauth-protected-resource"
 
 
-def _unauthorized(settings: Settings, detail: str) -> JSONResponse:
+def _unauthorized(settings: Settings, detail: str, error_code: str | None = None) -> JSONResponse:
+    # detail must be generic. The specific verifier failure (bad signature,
+    # wrong issuer, expired, unknown kid, ...) is recorded in the audit log
+    # only; echoing it in the response is a fingerprinting aid to an attacker
+    # probing the token-validation surface. error_code, when given, is exposed
+    # per RFC 6750 in WWW-Authenticate (e.g. invalid_token), which is the
+    # standard, coarse-grained signal clients act on.
     meta = _resource_metadata_url(settings)
+    challenge = f'Bearer resource_metadata="{meta}"'
+    if error_code:
+        challenge = f'Bearer error="{error_code}", resource_metadata="{meta}"'
     return JSONResponse(
         status_code=401,
         content={"error": "unauthorized", "detail": detail},
-        headers={"WWW-Authenticate": f'Bearer resource_metadata="{meta}"'},
+        headers={"WWW-Authenticate": challenge},
     )
 
 
@@ -134,6 +151,15 @@ def create_app(
     # check passes.
     client = httpx.AsyncClient(timeout=_build_timeout(settings))
 
+    # Origin allow-set, normalized once (lowercase, no trailing slash). The
+    # MCP spec's Streamable HTTP transport requires validating Origin as the
+    # DNS-rebinding defense. Semantics: a request with no Origin header passes
+    # (non-browser MCP clients don't send one); a present Origin passes only
+    # if listed. The default (empty list) therefore rejects all browser-style
+    # cross-origin traffic until origins are named, which is the deny-by-
+    # default posture everywhere else in this gateway.
+    allowed_origins = frozenset(_normalize_origin(o) for o in settings.allowed_origins)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
@@ -159,7 +185,7 @@ def create_app(
             "resource": _base_url(settings),
             "authorization_servers": [settings.issuer],
             "scopes_supported": sorted(
-                {s for scopes in policy.rules.values() for s in scopes}
+                {s for scopes in policy.rules.values() for s in scopes} | set(policy.default)
             ),
             "bearer_methods_supported": ["header"],
         }
@@ -180,7 +206,20 @@ def create_app(
         audit.record.issuer = settings.issuer
         audit.record.audience = settings.audience
 
-        # 0. Body-size guard before reading the whole body into memory.
+        # 0a. Origin validation (MCP Streamable HTTP DNS-rebinding defense).
+        #     Runs before anything else: no body read, no token verification.
+        origin = request.headers.get("origin")
+        if origin is not None and _normalize_origin(origin) not in allowed_origins:
+            audit.record.decision = "rejected"
+            audit.record.error_code = "origin_not_allowed"
+            audit.record.reason = f"origin not in allow-list: {origin[:256]!r}"
+            audit.emit()
+            return JSONResponse(
+                status_code=403,
+                content={"error": "origin_not_allowed", "detail": "request origin is not allowed"},
+            )
+
+        # 0b. Body-size guard before reading the whole body into memory.
         if settings.max_request_bytes > 0:
             declared = request.headers.get("content-length")
             if declared is not None and declared.isdigit() and int(declared) > settings.max_request_bytes:
@@ -211,13 +250,17 @@ def create_app(
                 audit.emit()
                 return _unauthorized(settings, "missing bearer token")
             try:
-                verified = verifier.verify(token)
+                # Worker thread, not the event loop: signature checks are CPU
+                # work and a kid-miss can trigger blocking JWKS I/O. Off-loop,
+                # a slow authorization server delays only the requests that
+                # need the new key; everything else keeps flowing.
+                verified = await run_in_threadpool(verifier.verify, token)
             except TokenError as exc:
                 audit.record.decision = "rejected"
                 audit.record.error_code = "invalid_token"
-                audit.record.reason = str(exc)
+                audit.record.reason = str(exc)  # specifics live here, not in the response
                 audit.emit()
-                return _unauthorized(settings, str(exc))
+                return _unauthorized(settings, "invalid bearer token", error_code="invalid_token")
             audit.record.subject = verified.subject
             audit.record.held_scope_count = len(verified.scopes)
             audit.record._scope_values = sorted(verified.scopes)

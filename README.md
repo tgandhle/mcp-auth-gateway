@@ -20,9 +20,14 @@ point your MCP clients at the gateway, point the gateway at the server.
   genuine miss, where a single-flight refresh is allowed at most once per
   cooldown window (`GATEWAY_JWKS_MIN_REFRESH_INTERVAL`); further misses inside
   the window fail closed with no network call. A flood of distinct bogus `kid`
-  values therefore cannot amplify into per-token JWKS fetches. Known
-  limitation: the fetch itself still runs synchronously on the request event
-  loop (see Known limitations).
+  values therefore cannot amplify into per-token JWKS fetches. Verification
+  runs in a worker thread, and the fetch happens outside the key-cache lock
+  with single-flight coordination: a slow authorization server delays only the
+  requests that genuinely need a new key, while cached keys keep verifying
+  (a key merely past its TTL is served stale during an in-flight refresh; its
+  replacement is one fetch away). A failed fetch is a 401 and starts the
+  cooldown, so an unreachable authorization server is retried once per window,
+  not once per request.
 - **Per-method scope enforcement.** MCP methods (`tools/call`, `tools/list`,
   `resources/read`, ...) are mapped to required scopes by a policy. Read vs.
   invoke is separated by default. Unknown methods are denied by default. The
@@ -30,6 +35,12 @@ point your MCP clients at the gateway, point the gateway at the server.
   mandatory `notifications/*` lifecycle messages a spec-compliant client sends
   (scope-free, token still required); denying those breaks every session
   immediately after the handshake.
+- **Origin validation.** The MCP Streamable HTTP transport's DNS-rebinding
+  defense: a request carrying an `Origin` header is rejected with `403` unless
+  that origin is listed in `GATEWAY_ALLOWED_ORIGINS`. Requests without an
+  `Origin` header (every non-browser MCP client) pass. The default is an empty
+  list, so browser-context traffic is denied until origins are named, matching
+  the deny-by-default posture elsewhere.
 - **Protected-resource metadata.** Serves RFC 9728
   `/.well-known/oauth-protected-resource` so spec-compliant MCP clients can
   discover which authorization server guards this resource. 401 responses
@@ -70,6 +81,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
 | `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between JWKS refreshes forced by a `kid` miss; default `10`. Bounds outbound JWKS fetches under unknown-`kid` floods |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
+| `GATEWAY_ALLOWED_ORIGINS` | no | JSON list of origins (`["https://app.example.com"]`) allowed to send an `Origin` header; default `[]` rejects any present `Origin`. Absent `Origin` always passes |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_TOOL_POLICY_FILE` | no | JSON tool allow-list; enables per-tool authorization on `tools/call`. Unset means tool authorization is off (scope only) |
 | `GATEWAY_REQUIRE_AUTH` | no | Default `true`; set `false` only for local dev |
@@ -197,13 +209,6 @@ cannot invoke a tool).
 These are known gaps, stated plainly so the security posture isn't overstated.
 Each is a tracked item, not a claimed guarantee.
 
-- **Synchronous JWKS I/O.** Outbound JWKS fetches are bounded (owned
-  `kid`->key cache, single-flight refresh, cooldown), but the fetch still runs
-  synchronously on the request event loop, so a slow authorization server can
-  stall every in-flight request for up to the fetch timeout during a refresh.
-  The refresh is triggerable without a valid signature (the token header is
-  peeked before verification), so this is reachable by an unauthenticated
-  caller once per cooldown window. Fix: async/off-loop JWKS I/O.
 - **Request-size limit.** An oversized numeric `Content-Length` is rejected
   before the body is read, but a chunked or unlabeled body is buffered fully
   before the size check, so the limit is not a hard memory bound in those cases.
@@ -214,9 +219,6 @@ Each is a tracked item, not a claimed guarantee.
   trusts a header outside that set could be misled. Configure the upstream to
   trust only the gateway-generated `X-Forwarded-*` identity headers. Fix: an
   outbound allowlist forwarding only transport-required headers.
-- **MCP Origin validation.** The gateway does not yet validate the `Origin`
-  header (the MCP spec's DNS-rebinding defense for Streamable HTTP). Fix: an
-  allowed-origins check returning `403` on an unapproved present origin.
 - **Plaintext JWKS URL.** `GATEWAY_JWKS_URL` currently permits `http://`. Use
   an `https://` endpoint; a future change will require TLS by default and allow
   plaintext only for loopback/dev.

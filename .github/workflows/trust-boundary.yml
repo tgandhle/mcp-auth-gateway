@@ -28,20 +28,20 @@ jobs:
   manifest-schema:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Validate manifests (kubeconform)
-        uses: docker://ghcr.io/yannh/kubeconform:latest
+        uses: docker://ghcr.io/yannh/kubeconform:v0.8.0
         with:
           args: "-strict -summary deploy/k8s/namespace.yaml deploy/k8s/gateway.yaml deploy/k8s/upstream.yaml deploy/k8s/network-policy.yaml"
 
   enforce-boundary:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # kind WITHOUT its default CNI, so we can install an enforcing one.
       - name: Create kind cluster (no default CNI)
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           cluster_name: trust-boundary
           config: deploy/k8s/kind-calico.yaml

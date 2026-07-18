@@ -156,12 +156,17 @@ def test_valid_kid_after_populate_uses_no_extra_fetch(monkeypatch, jwks, rsa_key
 
 def test_forced_refresh_after_cooldown(monkeypatch, jwks, rsa_key):
     # With a zero cooldown, each miss is allowed to refresh, proving the gate is
-    # the cooldown and not an accidental cap. cold(1) + one per miss(3) = 4.
+    # the cooldown and not an accidental cap: 3 misses = 3 fetches.
+    # (Previously this asserted >= 4: the old flow could fetch twice inside one
+    # cold-start call, a populate followed by a same-call forced refresh. The
+    # lock-narrowed resolver performs one fetch per resolution, because a
+    # just-completed populate is already maximally fresh and an immediate
+    # second fetch cannot observe different server state.)
     v, calls = _counting_verifier(monkeypatch, jwks, min_interval=0.0)
     for _ in range(3):
         with pytest.raises(TokenError):
             v.verify(mint(rsa_key, kid="bogus"))
-    assert calls["n"] >= 4
+    assert calls["n"] == 3
 
 
 def test_cooldown_window_resets(monkeypatch, jwks, rsa_key):
