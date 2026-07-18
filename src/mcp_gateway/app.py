@@ -33,6 +33,11 @@ from .tool_policy import ToolPolicy
 from .verifier import JwksVerifier, TokenError, VerifiedToken
 
 # JSON-RPC / HTTP constants
+# Maximum length of a protocol identifier (method name, tool name). These are
+# short strings by design; a longer value is malformed and, if echoed into logs
+# or error bodies unbounded, is a cheap amplification vector. 256 is generous
+# for any real MCP method or tool name.
+_MAX_IDENTIFIER_LEN = 256
 _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
@@ -144,9 +149,14 @@ def create_app(
 
     @app.get("/.well-known/oauth-protected-resource")
     async def protected_resource_metadata() -> dict[str, Any]:
-        # RFC 9728: tell clients which authorization server guards this resource.
+        # RFC 9728: "resource" MUST be the protected resource's identifier as an
+        # absolute URI (its canonical location), not an opaque audience string.
+        # A conforming client validates that this matches the resource it called
+        # and discards the metadata otherwise, so returning the audience token
+        # here would make the document unusable. We return the gateway's own
+        # base URL, which is the resource clients actually reach.
         return {
-            "resource": settings.audience,
+            "resource": _base_url(settings),
             "authorization_servers": [settings.issuer],
             "scopes_supported": sorted(
                 {s for scopes in policy.rules.values() for s in scopes}
@@ -340,23 +350,36 @@ def create_app(
             # on exit so a truncated response is distinguishable in a SIEM from a
             # clean one (the initial "allowed" event cannot convey this).
             sent = 0
-            truncated = False
+            # Default to an interrupted outcome; only a natural end of the
+            # upstream iterator flips this to "completed". This way any exit via
+            # exception or client cancellation is never mislabeled as clean.
+            result = "client_disconnected"
             try:
                 async for chunk in upstream.aiter_raw():
                     if cap > 0:
                         sent += len(chunk)
                         if sent > cap:
-                            truncated = True
-                            # Stop; closing the upstream stream below terminates
-                            # the partial body the client already received.
+                            result = "truncated_response_too_large"
                             break
                     yield chunk
+                else:
+                    # The async-for completed without break: the upstream body
+                    # ended naturally. Only here is the response truly complete.
+                    result = "completed"
+            except GeneratorExit:
+                # The client went away mid-stream. Record it as a disconnect,
+                # not a completion, then re-raise so the framework can finish
+                # tearing down the response.
+                result = "client_disconnected"
+                raise
+            except (httpx.HTTPError, httpx.StreamError) as exc:
+                # Reading from the upstream failed partway. This is neither a
+                # clean completion nor a policy truncation.
+                result = "upstream_read_error"
+                audit.record.reason = f"upstream stream error: {type(exc).__name__}"
             finally:
                 await upstream_cm.__aexit__(None, None, None)
-                audit.emit_stream_event(
-                    result="truncated_response_too_large" if truncated else "completed",
-                    bytes_streamed=sent,
-                )
+                audit.emit_stream_event(result=result, bytes_streamed=sent)
 
         return StreamingResponse(
             body_iter(),
@@ -426,6 +449,14 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     if not isinstance(method, str) or not method:
         return JsonRpcParse(error="JSON-RPC request missing a string 'method'", error_code="invalid_jsonrpc")
 
+    # Bound identifier length. A method (or tool name) is a short protocol
+    # identifier; anything long is malformed and, unbounded, would land in audit
+    # logs and error responses verbatim. Reject early rather than echo it.
+    if len(method) > _MAX_IDENTIFIER_LEN:
+        return JsonRpcParse(
+            error=f"'method' exceeds maximum length of {_MAX_IDENTIFIER_LEN}",
+            error_code="identifier_too_long",
+        )
     # Canonical serialization of the validated object. Forwarding this (not the
     # original bytes) is what closes the parser differential: the upstream can
     # no longer see bytes that parse differently from what we authorized.
@@ -440,6 +471,12 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     if method == "tools/call":
         params = data.get("params")
         name = params.get("name") if isinstance(params, dict) else None
+        # Bound tool-name length for the same reason as method above.
+        if isinstance(name, str) and len(name) > _MAX_IDENTIFIER_LEN:
+            return JsonRpcParse(
+                error=f"tool name exceeds maximum length of {_MAX_IDENTIFIER_LEN}",
+                error_code="identifier_too_long",
+            )
         tool = name if isinstance(name, str) and name else None
         return JsonRpcParse(method=method, tool_name=tool, canonical_body=canonical)
 
