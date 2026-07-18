@@ -105,7 +105,11 @@ def test_metadata_endpoint_public(monkeypatch, jwks):
     r = c.get("/.well-known/oauth-protected-resource")
     assert r.status_code == 200
     body = r.json()
-    assert body["resource"] == AUDIENCE
+    # RFC 9728: resource is the protected resource's absolute URI, not the
+    # opaque audience token. With no public_base_url set it falls back to the
+    # bind address.
+    assert body["resource"] == "http://127.0.0.1:8080"
+    assert body["resource"].startswith(("http://", "https://"))
     assert ISSUER in body["authorization_servers"]
 
 
