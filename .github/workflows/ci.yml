@@ -74,4 +74,9 @@ jobs:
         run: uv sync --frozen
 
       - name: Dependency audit (pip-audit)
-        run: uvx pip-audit
+        # uvx runs pip-audit in an isolated temp env, so a bare `uvx pip-audit`
+        # audits nothing from this project. Export the locked, non-dev
+        # dependencies and audit that explicit set instead.
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt
