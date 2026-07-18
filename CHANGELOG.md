@@ -6,7 +6,17 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- `:latest` no longer regresses to an older release line. The publish workflow
+  claimed `:latest` for any `v*` tag unconditionally, so cutting a backport or
+  hotfix tag on an older line (say `v0.2.1` after `v0.3.0`), or retroactively
+  tagging an earlier commit, would silently repoint `:latest` at older code.
+  The workflow now ranks the pushed tag against every release tag and claims
+  `:latest` only when it is the newest. Note that a `push` tag event runs the
+  workflow definition from the tagged commit, so this protects tags cut from
+  commits containing the fix; tagging an older commit still needs the workflow
+  disabled for the duration.
 
 ## [0.3.0] - 2026-07-18
 
