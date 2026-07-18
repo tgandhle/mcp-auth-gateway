@@ -54,6 +54,12 @@ class JsonRpcParse:
     # A tools/call whose name is missing or not a string is a parse error (the
     # request cannot be resolved to a tool), surfaced via ``error`` below.
     tool_name: str | None = None
+    # Canonical re-serialization of the validated request object. The gateway
+    # forwards THIS to the upstream, not the original bytes, so the upstream
+    # parses exactly what the gateway authorized. Prevents a duplicate-key
+    # parser differential (the gateway authorizing one value while a first-wins
+    # upstream executes another). None when parsing failed.
+    canonical_body: bytes | None = None
     error: str | None = None
     error_code: str = "invalid_jsonrpc"
 
@@ -280,11 +286,16 @@ def create_app(
             fwd_headers["X-Forwarded-Sub"] = verified.subject
             fwd_headers["X-Forwarded-Scopes"] = " ".join(sorted(verified.scopes))
 
+        # Forward the canonical re-serialization, not the original bytes, so the
+        # upstream parses exactly the object the gateway authorized. Falls back
+        # to raw only defensively; canonical_body is always set on a successful
+        # parse by the time we reach here.
+        forward_body = parsed.canonical_body if parsed.canonical_body is not None else raw
         try:
             upstream_cm = client.stream(
                 "POST",
                 str(settings.upstream_url),
-                content=raw,
+                content=forward_body,
                 headers=fwd_headers,
             )
             upstream = await upstream_cm.__aenter__()
@@ -357,21 +368,49 @@ def create_app(
     return app
 
 
+class _DuplicateKey(ValueError):
+    def __init__(self, key: str) -> None:
+        self.key = key
+        super().__init__(f"duplicate JSON object member: {key!r}")
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    """object_pairs_hook that rejects any object with a duplicate member name,
+    recursively (it runs for every nested object). Python's default json.loads
+    silently keeps the last value for a duplicate key; an upstream parser using
+    first-wins semantics would keep a different one, letting an attacker have
+    the gateway authorize one method/tool while the upstream executes another.
+    Refusing duplicates removes the ambiguity at the source."""
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _DuplicateKey(key)
+        seen.add(key)
+    return dict(pairs)
+
+
 def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     """Strictly parse a single JSON-RPC request and resolve its method.
 
     Fails closed. Returns an error (which the caller turns into a 400) for:
       - malformed / non-JSON bodies
+      - objects containing duplicate member names (parser-differential guard)
       - JSON-RPC batches (arrays): per-item authz is not implemented, so we
         refuse rather than forward a request whose methods we haven't checked
       - JSON that isn't an object
       - objects missing a string ``method``
 
-    Only a well-formed single request with a string method returns a method
-    for the scope policy to evaluate.
+    On success it also produces ``canonical_body``: a re-serialization of the
+    validated object that the caller forwards upstream instead of the original
+    bytes, so the upstream parses exactly what the gateway authorized.
     """
     try:
-        data = json.loads(raw)
+        data = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey as exc:
+        return JsonRpcParse(
+            error=f"request contains a duplicate JSON object member: {exc.key!r}",
+            error_code="duplicate_json_key",
+        )
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
         return JsonRpcParse(error="request body is not valid JSON", error_code="invalid_json")
 
@@ -387,6 +426,11 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     if not isinstance(method, str) or not method:
         return JsonRpcParse(error="JSON-RPC request missing a string 'method'", error_code="invalid_jsonrpc")
 
+    # Canonical serialization of the validated object. Forwarding this (not the
+    # original bytes) is what closes the parser differential: the upstream can
+    # no longer see bytes that parse differently from what we authorized.
+    canonical = json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
     # For tools/call, extract the tool name from params.name when present. We do
     # NOT reject a missing/non-string name here: that check belongs to the
     # tool-authorization layer, which is opt-in. When no tool policy is
@@ -397,6 +441,6 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
         params = data.get("params")
         name = params.get("name") if isinstance(params, dict) else None
         tool = name if isinstance(name, str) and name else None
-        return JsonRpcParse(method=method, tool_name=tool)
+        return JsonRpcParse(method=method, tool_name=tool, canonical_body=canonical)
 
-    return JsonRpcParse(method=method)
+    return JsonRpcParse(method=method, canonical_body=canonical)
