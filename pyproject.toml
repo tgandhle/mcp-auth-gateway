@@ -1,6 +1,6 @@
 [project]
 name = "mcp-auth-gateway"
-version = "0.2.0"
+version = "0.3.0"
 description = "An OAuth 2.1 / JWT-enforcing reverse proxy that sits in front of an MCP server and applies token validation and per-method scope checks."
 readme = "README.md"
 requires-python = ">=3.10"

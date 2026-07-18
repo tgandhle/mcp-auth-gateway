@@ -6,6 +6,19 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+_No unreleased changes._
+
+## [0.3.0] - 2026-07-18
+
+Interoperability, audit-integrity, and availability hardening release,
+resolving every code finding from the third external review (see
+`docs/SECURITY-REVIEW-HISTORY.md`, Review 3, including its post-review
+resolution note). Verified end to end with the official MCP SDK as both
+client and upstream on Linux and Windows; the reproduction harness is
+committed under `verification/` and doubles as the regression check.
+Verified at commit `031f184`: 137 tests pass, ruff/mypy/bandit clean, and the
+CI dependency audit runs against the locked set.
+
 ### Security
 
 - Off-loop, lock-narrowed JWKS verification. Token verification now runs in a

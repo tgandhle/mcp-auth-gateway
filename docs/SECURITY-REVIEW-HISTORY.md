@@ -155,3 +155,28 @@ made it observable that no allowed-decision audit lines were being emitted at
 all, which a static read of `audit.py` alone does not reveal because the
 module's own logic is correct; the gap was in the entrypoint's logging wiring.
 
+### Post-review resolution (2026-07-18)
+
+Deferred rows 5-8 were resolved after this review was recorded, at commit
+`031f184` (released in v0.3.0):
+
+- Row 5 (synchronous JWKS I/O, unauthenticated event-loop stall): verification
+  now runs in a worker thread and the JWKS fetch happens outside the key-cache
+  lock with single-flight coordination; cached keys keep verifying during an
+  in-flight refresh and a failed fetch is a 401 that starts the cooldown.
+  Regression tests: `tests/test_verifier_concurrency.py` and the
+  event-loop-freedom test in `tests/test_origin_and_offloop.py`.
+- Row 6 (401 detail echo): invalid-token responses now return a generic body
+  with the RFC 6750 `error="invalid_token"` code in `WWW-Authenticate`; the
+  verifier's reason is recorded in the audit log only.
+- Row 7 (mutable action/image pins): all third-party actions are pinned to
+  commit SHAs resolved from the GitHub API (tags kept as comments), and the
+  kubeconform image is pinned to `v0.8.0`. Digest pinning of that image
+  remains open pending a recorded digest.
+- Row 8 (`scopes_supported` completeness): the metadata now includes scopes
+  named in a policy's `default` set.
+
+Origin validation, tracked in the README's known limitations rather than in
+this table, landed in the same commit (`GATEWAY_ALLOWED_ORIGINS`,
+deny-by-default for any present `Origin`). The rows above are unchanged as
+the historical record.
