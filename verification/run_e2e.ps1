@@ -75,7 +75,7 @@ def echo(text: str) -> str:
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
 '@
-[System.IO.File]::WriteAllText((Join-Path $vdir "real_upstream.py"), $upstreamPy, $u8)
+if (-not (Test-Path (Join-Path $vdir "real_upstream.py"))) { [System.IO.File]::WriteAllText((Join-Path $vdir "real_upstream.py"), $upstreamPy, $u8) }
 
 $clientPy = @'
 """Official MCP SDK client driven end to end through the gateway.
@@ -126,7 +126,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 '@
-[System.IO.File]::WriteAllText((Join-Path $vdir "e2e_client.py"), $clientPy, $u8)
+if (-not (Test-Path (Join-Path $vdir "e2e_client.py"))) { [System.IO.File]::WriteAllText((Join-Path $vdir "e2e_client.py"), $clientPy, $u8) }
 
 $fixedPolicy = @'
 {
