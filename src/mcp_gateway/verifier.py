@@ -11,26 +11,27 @@ Design notes (these are the things an interviewer will probe):
 - Issuer and audience are required and verified by PyJWT, not by us after the
   fact, so a malformed-but-signed token can't slip a wrong ``aud`` through.
 - ``exp``/``nbf``/``iat`` are enforced with a small configurable leeway.
-- JWKS is cached with a TTL. On a ``kid`` miss we force-refresh once (handles
-  key rotation) before failing closed, and the gateway rebuilds its JWKS client
-  at most once per a configurable cooldown window. Note the current limitation:
-  the cooldown caps how often the gateway *rebuilds* its client, but the
-  underlying PyJWK client still performs its own network fetch on an unknown
-  ``kid`` within the window, so this does not yet fully bound outbound JWKS
-  requests under a flood of distinct bogus ``kid`` values. Fully capping fetches
-  (an explicitly owned kid->key map with single-flight refresh) is tracked as a
-  hardening item.
+- JWKS handling owns its own ``kid`` -> key cache. Verification looks up the
+  token's ``kid`` in that in-memory map and only touches the network on a miss.
+  A miss triggers at most one JWKS fetch per cooldown window (to pick up key
+  rotation); further misses within the window fail closed with no network call.
+  Crucially, the network fetch is bounded by *our* cooldown, not delegated to a
+  library that would refetch per unknown ``kid``: a flood of distinct bogus
+  ``kid`` values cannot amplify into one outbound JWKS request per token. A
+  single-flight lock ensures concurrent misses collapse into one fetch.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
 import jwt
-from jwt import PyJWK, PyJWKClient
+from jwt import PyJWK, PyJWKSet
 
 
 class TokenError(Exception):
@@ -42,7 +43,6 @@ class VerifiedToken:
     subject: str
     scopes: frozenset[str]
     claims: dict[str, Any]
-
 
 def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
     """Extract scopes from either the ``scope`` (space-delimited string,
@@ -61,8 +61,9 @@ def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
 class JwksVerifier:
     """Verifies bearer JWTs against a JWKS endpoint.
 
-    Thread-safe. The underlying PyJWKClient does its own short-lived caching;
-    we add an explicit TTL and a force-refresh path for key rotation.
+    Thread-safe. Owns an explicit ``kid`` -> key map so that verification is a
+    local lookup, and the network is touched only on a genuine ``kid`` miss,
+    rate-limited by a cooldown so bogus-``kid`` floods cannot amplify fetches.
     """
 
     def __init__(
@@ -74,6 +75,7 @@ class JwksVerifier:
         leeway_seconds: int = 30,
         cache_ttl: int = 300,
         min_refresh_interval: float = 10.0,
+        fetch_timeout: float = 5.0,
     ) -> None:
         if not jwks_url:
             raise ValueError("jwks_url is required")
@@ -88,43 +90,82 @@ class JwksVerifier:
         self._algs = list(allowed_algorithms)
         self._leeway = leeway_seconds
         self._ttl = cache_ttl
-        # Minimum seconds between forced JWKS client rebuilds. A kid miss forces
-        # at most one rebuild per this interval; further misses within the window
-        # do not rebuild. Note this caps rebuilds, not the underlying PyJWK
-        # client's own network fetch on an unknown kid, so it does not by itself
-        # fully bound outbound JWKS requests under bogus-kid floods (see the
-        # module docstring). Tracked as a hardening item.
         self._min_refresh_interval = min_refresh_interval
+        self._fetch_timeout = fetch_timeout
 
         self._lock = threading.Lock()
-        self._client = PyJWKClient(jwks_url, cache_keys=True, lifespan=cache_ttl)
-        # Set to construction time, not 0.0: the client we just built has a
-        # fresh cache, so the first verify() should use it rather than
-        # immediately rebuilding (which would also drop any test/DI patch).
-        self._last_refresh = time.monotonic()
+        # Our owned cache: kid -> PyJWK. Empty until the first fetch. A fetch is
+        # lazy (on first verify) so construction does no network I/O.
+        self._keys: dict[str, PyJWK] = {}
+        # monotonic time of the last successful (or attempted) fetch. Set to a
+        # sentinel far in the past so the first miss is always allowed to fetch.
+        self._last_fetch = float("-inf")
+    def _fetch_jwks(self) -> dict:
+        """Fetch and return the raw JWKS document. The single network seam.
 
-    def _get_signing_key(self, token: str, *, force: bool) -> PyJWK:
+        Overridden in tests to serve an in-memory JWKS and to count fetches.
+        Kept deliberately small so the fetch is the only thing that touches the
+        network and is trivially observable.
+        """
+        # Enforce http/https explicitly: urlopen otherwise accepts file:// and
+        # custom schemes, which must never be followed for a JWKS URL. This is
+        # the guard bandit B310 asks for.
+        if not self._jwks_url.lower().startswith(("http://", "https://")):
+            raise TokenError(f"refusing non-http(s) JWKS URL scheme: {self._jwks_url!r}")
+        req = urllib.request.Request(self._jwks_url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:  # nosec B310
+            return json.loads(resp.read())
+
+    def _refresh_keys(self) -> None:
+        """Fetch the JWKS and replace the owned key map. Caller holds the lock."""
+        raw = self._fetch_jwks()
+        keyset = PyJWKSet.from_dict(raw)
+        self._keys = {k.key_id: k for k in keyset.keys if k.key_id}
+        self._last_fetch = time.monotonic()
+
+    def _resolve_key(self, kid: str) -> PyJWK:
+        """Return the signing key for ``kid`` from the owned cache, refreshing
+        at most once per cooldown window on a miss. Fails closed.
+
+        Network access happens only when: the cache is cold (no fetch yet), the
+        TTL has expired, or a miss occurs and the cooldown has elapsed. A miss
+        inside the cooldown returns no key and performs no fetch, which is what
+        bounds bogus-kid floods.
+        """
         with self._lock:
             now = time.monotonic()
-            ttl_expired = (now - self._last_refresh) > self._ttl
-            # A forced rebuild (kid miss) is honored only if we have not rebuilt
-            # within the cooldown window. This caps how often we rebuild the
-            # client; it does not cap the underlying client's own fetch on an
-            # unknown kid (see module docstring). A TTL-expired rebuild is always
-            # allowed; it is naturally rate-limited by the TTL.
-            force_allowed = force and (now - self._last_refresh) >= self._min_refresh_interval
-            if force_allowed or ttl_expired:
-                # Rebuild the client to drop any stale cached keys.
-                self._client = PyJWKClient(self._jwks_url, cache_keys=True, lifespan=self._ttl)
-                self._last_refresh = now
-            return self._client.get_signing_key_from_jwt(token)
+            cold = self._last_fetch == float("-inf")
+            ttl_expired = (not cold) and (now - self._last_fetch) > self._ttl
 
+            # Populate on cold start or when the TTL has lapsed. Both are
+            # naturally rate-limited (once at start; once per TTL).
+            if cold or ttl_expired:
+                self._refresh_keys()
+
+            key = self._keys.get(kid)
+            if key is not None:
+                return key
+
+            # Miss. Allow exactly one forced refresh per cooldown window to pick
+            # up key rotation. Inside the window, fail closed with no network.
+            # Recompute the clock: a cold/TTL populate above may have advanced
+            # _last_fetch past the `now` captured at entry, which would make the
+            # elapsed comparison negative and wrongly suppress the refresh.
+            now = time.monotonic()
+            cooldown_elapsed = (now - self._last_fetch) >= self._min_refresh_interval
+            if cooldown_elapsed:
+                self._refresh_keys()
+                key = self._keys.get(kid)
+                if key is not None:
+                    return key
+
+            raise TokenError("no matching signing key")
     def verify(self, token: str) -> VerifiedToken:
         if not token:
             raise TokenError("empty token")
 
-        # Peek the header to fail fast on unsigned / wrong-alg tokens before
-        # any network call.
+        # Peek the header to fail fast on unsigned / wrong-alg tokens before any
+        # network call.
         try:
             header = jwt.get_unverified_header(token)
         except jwt.PyJWTError as exc:
@@ -134,15 +175,11 @@ class JwksVerifier:
         if alg not in self._algs:
             raise TokenError(f"algorithm not allowed: {alg!r}")
 
-        signing_key: PyJWK | None = None
-        try:
-            signing_key = self._get_signing_key(token, force=False)
-        except jwt.PyJWTError:
-            # kid not found -> possibly rotated. Force one refresh, then fail.
-            try:
-                signing_key = self._get_signing_key(token, force=True)
-            except jwt.PyJWTError as exc:
-                raise TokenError(f"no matching signing key: {exc}") from exc
+        kid = header.get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise TokenError("token header missing 'kid'")
+
+        signing_key = self._resolve_key(kid)
 
         try:
             claims = jwt.decode(

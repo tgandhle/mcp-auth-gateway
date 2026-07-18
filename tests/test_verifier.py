@@ -1,6 +1,7 @@
-"""Verifier tests. We point PyJWKClient at a local file:// or patch its fetch
-so no network is needed; here we inject the JWKS by monkeypatching the client's
-key fetch."""
+"""Verifier tests. The verifier owns its kid->key cache and fetches the JWKS
+through a single seam (_fetch_jwks). Tests override that seam to serve an
+in-memory JWKS with no network, and to count fetches so the bogus-kid bound is
+proved at the fetch layer (not merely at a rebuild counter)."""
 
 from __future__ import annotations
 
@@ -11,26 +12,16 @@ from conftest import AUDIENCE, ISSUER, KID, mint
 from mcp_gateway.verifier import JwksVerifier, TokenError
 
 
-def make_verifier(monkeypatch, jwks, algs=None) -> JwksVerifier:
+def make_verifier(monkeypatch, jwks, algs=None, **kw) -> JwksVerifier:
     v = JwksVerifier(
         jwks_url="https://issuer.test/jwks.json",
         issuer=ISSUER,
         audience=AUDIENCE,
         allowed_algorithms=algs or ["RS256", "ES256"],
+        **kw,
     )
-
-    # Patch the PyJWKClient instance to serve our in-memory JWKS without HTTP.
-    from jwt import PyJWKSet
-
-    def fake_get_signing_key_from_jwt(token):
-        keyset = PyJWKSet.from_dict(jwks)
-        header = jwt.get_unverified_header(token)
-        for k in keyset.keys:
-            if k.key_id == header.get("kid"):
-                return k
-        raise jwt.PyJWKClientError("no kid match")
-
-    monkeypatch.setattr(v._client, "get_signing_key_from_jwt", fake_get_signing_key_from_jwt)
+    # Serve the in-memory JWKS through the fetch seam; no HTTP.
+    monkeypatch.setattr(v, "_fetch_jwks", lambda: jwks)
     return v
 
 
@@ -62,7 +53,6 @@ def test_wrong_issuer(monkeypatch, jwks, rsa_key):
 
 def test_alg_none_rejected(monkeypatch, jwks, rsa_key):
     v = make_verifier(monkeypatch, jwks)
-    # craft an alg=none token
     import base64
     import json
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "kid": KID}).encode()).rstrip(b"=").decode()
@@ -76,6 +66,20 @@ def test_empty_token(monkeypatch, jwks):
     v = make_verifier(monkeypatch, jwks)
     with pytest.raises(TokenError):
         v.verify("")
+
+
+def test_missing_kid_rejected(monkeypatch, jwks, rsa_key):
+    # A token with no kid in its header cannot select a key and is rejected
+    # before any network access.
+    v = make_verifier(monkeypatch, jwks)
+    import time
+    now = int(time.time())
+    tok = jwt.encode(
+        {"iss": ISSUER, "aud": AUDIENCE, "sub": "x", "iat": now, "exp": now + 300},
+        rsa_key, algorithm="RS256",  # no kid header
+    )
+    with pytest.raises(TokenError):
+        v.verify(tok)
 
 
 def test_construction_rejects_symmetric():
@@ -100,35 +104,16 @@ def test_missing_sub(monkeypatch, jwks, rsa_key):
         v.verify(bad)
 
 
-# --- JWKS refresh cooldown ---------------------------------------------------
+# --- JWKS fetch bounding -----------------------------------------------------
 #
-# A kid miss forces a JWKS refresh (to pick up rotation), but a flood of tokens
-# with bogus/distinct kids must not be able to trigger an unbounded number of
-# refreshes against the authorization server. The cooldown caps forced
-# refreshes to at most one per min_refresh_interval.
+# The security-critical property: a flood of tokens carrying distinct bogus
+# kids must not turn the gateway into one outbound JWKS fetch per token. These
+# tests count fetches at the network seam (_fetch_jwks), not client rebuilds, so
+# they measure the thing the authorization server actually experiences.
 
 
-class _CountingClient:
-    """Stand-in for PyJWKClient that counts how many times it is constructed
-    (each construction corresponds to a JWKS fetch) and never finds a key, so
-    every lookup is a kid miss."""
-
-    instances = 0
-
-    def __init__(self, *args, **kwargs):
-        type(self).instances += 1
-
-    def get_signing_key_from_jwt(self, token):
-        import jwt as _jwt
-        raise _jwt.PyJWKClientError("no kid match")
-
-
-def _make_counting_verifier(monkeypatch, min_interval):
-    import mcp_gateway.verifier as vmod
-
-    _CountingClient.instances = 0
-    monkeypatch.setattr(vmod, "PyJWKClient", _CountingClient)
-    v = vmod.JwksVerifier(
+def _counting_verifier(monkeypatch, jwks, min_interval):
+    v = JwksVerifier(
         jwks_url="https://issuer.test/jwks.json",
         issuer=ISSUER,
         audience=AUDIENCE,
@@ -136,54 +121,65 @@ def _make_counting_verifier(monkeypatch, min_interval):
         cache_ttl=300,
         min_refresh_interval=min_interval,
     )
-    return v, vmod
+    calls = {"n": 0}
+
+    def counting_fetch():
+        calls["n"] += 1
+        return jwks
+
+    monkeypatch.setattr(v, "_fetch_jwks", counting_fetch)
+    return v, calls
 
 
-def test_bogus_kid_flood_is_rate_limited(monkeypatch, rsa_key):
-    # Construction builds the client once. A flood of bogus-kid tokens within
-    # the cooldown window must trigger at most one additional (forced) refresh.
-    v, _ = _make_counting_verifier(monkeypatch, min_interval=10.0)
-    assert _CountingClient.instances == 1  # the one built in __init__
+def test_bogus_kid_flood_bounds_fetches(monkeypatch, jwks, rsa_key):
+    # 100 distinct bogus kids within one cooldown window. Expect: one cold-start
+    # fetch to populate the cache, plus at most one forced refresh for the first
+    # miss. Every subsequent miss inside the window must perform NO fetch.
+    v, calls = _counting_verifier(monkeypatch, jwks, min_interval=10.0)
 
-    for _ in range(50):
+    for i in range(100):
         with pytest.raises(TokenError):
-            v.verify(mint(rsa_key, kid="bogus-kid"))
+            v.verify(mint(rsa_key, kid=f"bogus-{i}"))
 
-    # 1 (construction) + at most 1 (a single forced refresh in the window).
-    assert _CountingClient.instances <= 2
+    # cold-start populate (1) + single forced refresh in the window (1) = 2.
+    assert calls["n"] <= 2, f"expected <=2 fetches for 100 bogus kids, got {calls['n']}"
 
 
-def test_forced_refresh_allowed_after_cooldown(monkeypatch, rsa_key):
-    # With a zero cooldown, each kid miss is allowed to force a refresh, proving
-    # the gate is the cooldown and not some other accidental cap.
-    v, _ = _make_counting_verifier(monkeypatch, min_interval=0.0)
-    start = _CountingClient.instances
+def test_valid_kid_after_populate_uses_no_extra_fetch(monkeypatch, jwks, rsa_key):
+    # The real key is served by the fetch. Verifying several valid tokens should
+    # cost one fetch total (the cold-start populate), then pure cache hits.
+    v, calls = _counting_verifier(monkeypatch, jwks, min_interval=10.0)
+    for _ in range(5):
+        v.verify(mint(rsa_key))
+    assert calls["n"] == 1
 
+
+def test_forced_refresh_after_cooldown(monkeypatch, jwks, rsa_key):
+    # With a zero cooldown, each miss is allowed to refresh, proving the gate is
+    # the cooldown and not an accidental cap. cold(1) + one per miss(3) = 4.
+    v, calls = _counting_verifier(monkeypatch, jwks, min_interval=0.0)
     for _ in range(3):
         with pytest.raises(TokenError):
-            v.verify(mint(rsa_key, kid="bogus-kid"))
-
-    # Each verify forces a refresh because the cooldown is zero.
-    assert _CountingClient.instances >= start + 3
+            v.verify(mint(rsa_key, kid="bogus"))
+    assert calls["n"] >= 4
 
 
-def test_cooldown_window_resets(monkeypatch, rsa_key):
-    # After the cooldown elapses, a new forced refresh is permitted. We simulate
-    # time passing by rewinding _last_refresh past the interval.
-    v, _ = _make_counting_verifier(monkeypatch, min_interval=10.0)
+def test_cooldown_window_resets(monkeypatch, jwks, rsa_key):
+    v, calls = _counting_verifier(monkeypatch, jwks, min_interval=10.0)
 
+    # First miss: cold populate + one forced refresh.
     with pytest.raises(TokenError):
-        v.verify(mint(rsa_key, kid="bogus-kid"))
-    after_first = _CountingClient.instances
+        v.verify(mint(rsa_key, kid="bogus"))
+    after_first = calls["n"]
 
-    # Another miss immediately: still within the window, no new refresh.
+    # Second miss immediately: within the window, no new fetch.
     with pytest.raises(TokenError):
-        v.verify(mint(rsa_key, kid="bogus-kid"))
-    assert _CountingClient.instances == after_first
+        v.verify(mint(rsa_key, kid="bogus"))
+    assert calls["n"] == after_first
 
-    # Simulate the cooldown elapsing, then a miss is allowed to refresh again.
+    # Simulate cooldown elapsing: a miss is allowed to refresh again.
     import time as _t
-    v._last_refresh = _t.monotonic() - 20.0
+    v._last_fetch = _t.monotonic() - 20.0
     with pytest.raises(TokenError):
-        v.verify(mint(rsa_key, kid="bogus-kid"))
-    assert _CountingClient.instances == after_first + 1
+        v.verify(mint(rsa_key, kid="bogus"))
+    assert calls["n"] == after_first + 1

@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import jwt
 import respx
 from fastapi.testclient import TestClient
 
@@ -48,17 +47,8 @@ def _verifier(monkeypatch, jwks) -> JwksVerifier:
         issuer=ISSUER, audience=AUDIENCE,
         allowed_algorithms=["RS256", "ES256"],
     )
-    from jwt import PyJWKSet
-
-    def fake(token):
-        keyset = PyJWKSet.from_dict(jwks)
-        header = jwt.get_unverified_header(token)
-        for k in keyset.keys:
-            if k.key_id == header.get("kid"):
-                return k
-        raise jwt.PyJWKClientError("no kid")
-
-    monkeypatch.setattr(v._client, "get_signing_key_from_jwt", fake)
+    # Serve the in-memory JWKS through the fetch seam; no HTTP.
+    monkeypatch.setattr(v, "_fetch_jwks", lambda: jwks)
     return v
 
 
