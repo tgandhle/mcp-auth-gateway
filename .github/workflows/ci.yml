@@ -78,5 +78,5 @@ jobs:
         # audits nothing from this project. Export the locked, non-dev
         # dependencies and audit that explicit set instead.
         run: |
-          uv export --frozen --no-dev --format requirements-txt --output-file requirements-audit.txt
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file requirements-audit.txt
           uvx pip-audit -r requirements-audit.txt
