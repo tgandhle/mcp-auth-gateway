@@ -5,3 +5,6 @@ jwks.json
 run_verification.ps1
 call.json
 list.json
+*.err
+*.out
+scope-policy-fixed.json

@@ -6,7 +6,51 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
-_No unreleased changes._
+### Fixed
+
+- MCP lifecycle coverage in the scope policies. The builtin policy (and
+  `examples/scope-policy.json`) had no rule for the `notifications/*` family,
+  so deny-by-default returned 403 on the mandatory `notifications/initialized`
+  notification and killed every spec-compliant client session immediately
+  after the handshake. Verified end to end with the official MCP SDK as both
+  client and upstream (Linux and Windows): the session died before the first
+  post-handshake call, and a `notifications/` rule restored the full flow.
+  The builtin policy now covers the complete client-to-server surface:
+  `notifications/` (scope-free; token still required), `resources/` as a
+  prefix (adds `resources/templates/list` and `resources/unsubscribe`),
+  `prompts/` as a prefix, and `logging/setLevel` (gated as `mcp:invoke`, it
+  mutates server state). `tests/test_mcp_method_surface.py` walks the spec's
+  client-to-server method list against both policies so the gap cannot
+  reopen. (`verification/run_e2e.ps1` is the end-to-end regression harness.)
+- Audit events now reach output as shipped. The `mcp_gateway.audit` logger had
+  no handler when run via the entrypoint, so INFO events (every allowed
+  decision and every stream-completion event) were dropped; only WARNING+
+  leaked to stderr via Python's last-resort handler. Verified empirically: a
+  fully successful end-to-end session produced zero visible audit lines. The
+  entrypoint now attaches a stdout handler at INFO (idempotent, and deferential
+  to operator-configured handlers or levels). (`tests/test_audit_logging.py`.)
+- Non-finite JSON constants are rejected. `json.loads` accepts
+  `NaN`/`Infinity`/`-Infinity` and `json.dumps` re-emits them, so the
+  canonical body could carry non-RFC 8259 tokens: a lax upstream parses them,
+  a strict one rejects the request, which is the parser-family divergence
+  canonicalization exists to eliminate. The parser now refuses them with
+  `400 nonstandard_json_constant`. (`tests/test_parser_differential.py`.)
+
+### Changed
+
+- README corrected to match the PR #19 implementation: the key-rotation
+  bullet, the `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` row, and the first Known
+  limitations entry still described the pre-#19 design (client rebuilds,
+  unbounded library fetches). The remaining true limitation, synchronous JWKS
+  I/O on the request event loop, is now stated on its own, including that the
+  refresh is triggerable without a valid signature.
+
+### Added
+
+- End-to-end verification harness (`verification/run_e2e.ps1`,
+  `verification/real_upstream.py`, `verification/e2e_client.py`): a real MCP
+  SDK server and client driven through the gateway, exercising the full
+  lifecycle under the builtin policy and under a policy file.
 
 ## [0.2.0] - 2026-07-17
 

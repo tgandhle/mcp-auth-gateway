@@ -123,3 +123,34 @@ def test_clean_request_forwards_canonical_bytes(monkeypatch, jwks, rsa_key):
     # Upstream received canonical bytes (no extra spaces), parsing to same object.
     assert json.loads(captured["body"]) == {"jsonrpc": "2.0", "method": "tools/list", "id": 1}
     assert b"  " not in captured["body"]  # compact separators, no double spaces
+
+
+# --- Non-finite constants: not RFC 8259, refused at the source ---------------
+# Python's json accepts NaN/Infinity and re-emits them, so the canonical body
+# could carry tokens a strict upstream rejects and a lax one accepts, which is
+# the parser-family divergence canonicalization exists to eliminate.
+
+def test_nan_constant_rejected():
+    body = b'{"jsonrpc":"2.0","method":"ping","x":NaN,"id":1}'
+    parsed = _parse_jsonrpc(body)
+    assert parsed.error is not None
+    assert parsed.error_code == "nonstandard_json_constant"
+    assert parsed.method is None
+
+
+def test_infinity_constants_rejected():
+    for body in (
+        b'{"jsonrpc":"2.0","method":"ping","x":Infinity,"id":1}',
+        b'{"jsonrpc":"2.0","method":"ping","x":-Infinity,"id":1}',
+        b'{"jsonrpc":"2.0","method":"tools/call","params":{"name":"t","arguments":{"n":NaN}},"id":1}',
+    ):
+        parsed = _parse_jsonrpc(body)
+        assert parsed.error is not None
+        assert parsed.error_code == "nonstandard_json_constant"
+
+
+def test_finite_numbers_still_accepted():
+    body = b'{"jsonrpc":"2.0","method":"ping","x":1.5e10,"y":-0.0,"id":1}'
+    parsed = _parse_jsonrpc(body)
+    assert parsed.error is None
+    assert parsed.method == "ping"

@@ -15,17 +15,21 @@ point your MCP clients at the gateway, point the gateway at the server.
   `exp`, `iat` (and `nbf` when present). Pins acceptable signing algorithms to asymmetric only
   (RS/ES/PS); `none` and HMAC algs are refused at construction time, which
   closes the algorithm-confusion class of bypass.
-- **Key rotation.** Selects the verification key by the token's `kid`. On a
-  `kid` miss it force-refreshes the JWKS once before failing closed, and rebuilds
-  its JWKS client at most once per cooldown window. Known limitation: the
-  cooldown caps client *rebuilds*, not the underlying JWKS-library fetch on an
-  unknown `kid`, so unknown-`kid` traffic is not yet fully bounded against the
-  authorization server. Fully capping outbound fetches (an explicitly owned
-  `kid`->key map with single-flight refresh, and moving JWKS I/O off the request
-  event loop) is a tracked hardening item.
+- **Key rotation.** Selects the verification key by the token's `kid` from an
+  explicitly owned in-memory `kid`->key cache. The network is touched only on a
+  genuine miss, where a single-flight refresh is allowed at most once per
+  cooldown window (`GATEWAY_JWKS_MIN_REFRESH_INTERVAL`); further misses inside
+  the window fail closed with no network call. A flood of distinct bogus `kid`
+  values therefore cannot amplify into per-token JWKS fetches. Known
+  limitation: the fetch itself still runs synchronously on the request event
+  loop (see Known limitations).
 - **Per-method scope enforcement.** MCP methods (`tools/call`, `tools/list`,
   `resources/read`, ...) are mapped to required scopes by a policy. Read vs.
-  invoke is separated by default. Unknown methods are denied by default.
+  invoke is separated by default. Unknown methods are denied by default. The
+  built-in policy covers the full client-to-server MCP surface, including the
+  mandatory `notifications/*` lifecycle messages a spec-compliant client sends
+  (scope-free, token still required); denying those breaks every session
+  immediately after the handshake.
 - **Protected-resource metadata.** Serves RFC 9728
   `/.well-known/oauth-protected-resource` so spec-compliant MCP clients can
   discover which authorization server guards this resource. 401 responses
@@ -40,7 +44,9 @@ point your MCP clients at the gateway, point the gateway at the server.
   on the `mcp_gateway.audit` logger: request id, subject, method, decision,
   required scopes, held-scope count, upstream status, latency, source IP. Raw
   tokens and PKCE verifiers are never logged. Scope *values* appear only at
-  DEBUG; INFO logs the count.
+  DEBUG; INFO logs the count. The `mcp-gateway` entrypoint attaches a stdout
+  handler to this logger so the lines are emitted as shipped; if you embed
+  `create_app` directly, configure a handler for `mcp_gateway.audit` yourself.
 - **Resilience guards.** Configurable max request body size (default 5 MiB,
   returns `413`) and per-phase upstream timeouts (connect/read/write/pool).
 
@@ -62,7 +68,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
 | `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
 | `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
-| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between forced JWKS client rebuilds on a `kid` miss; default `10`. Caps rebuild cadence (see the key-rotation note on its limits, it does not yet fully bound outbound fetches) |
+| `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between JWKS refreshes forced by a `kid` miss; default `10`. Bounds outbound JWKS fetches under unknown-`kid` floods |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_SCOPE_POLICY_FILE` | no | JSON scope policy; built-in default if unset |
 | `GATEWAY_TOOL_POLICY_FILE` | no | JSON tool allow-list; enables per-tool authorization on `tools/call`. Unset means tool authorization is off (scope only) |
@@ -191,13 +197,13 @@ cannot invoke a tool).
 These are known gaps, stated plainly so the security posture isn't overstated.
 Each is a tracked item, not a claimed guarantee.
 
-- **JWKS fetch bounding.** The `kid`-miss cooldown caps how often the gateway
-  rebuilds its JWKS client, but the underlying JWKS library still fetches on an
-  unknown `kid` within the window, so outbound JWKS requests under a flood of
-  distinct bogus `kid` values are not yet fully bounded. JWKS verification also
-  runs synchronously on the request path, so a slow authorization server can
-  block the event loop. Fix: an explicitly owned `kid`->key map with
-  single-flight refresh, and async/off-loop JWKS I/O.
+- **Synchronous JWKS I/O.** Outbound JWKS fetches are bounded (owned
+  `kid`->key cache, single-flight refresh, cooldown), but the fetch still runs
+  synchronously on the request event loop, so a slow authorization server can
+  stall every in-flight request for up to the fetch timeout during a refresh.
+  The refresh is triggerable without a valid signature (the token header is
+  peeked before verification), so this is reachable by an unauthenticated
+  caller once per cooldown window. Fix: async/off-loop JWKS I/O.
 - **Request-size limit.** An oversized numeric `Content-Length` is rejected
   before the body is read, but a chunked or unlabeled body is buffered fully
   before the size check, so the limit is not a hard memory bound in those cases.

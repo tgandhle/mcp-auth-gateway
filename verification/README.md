@@ -7,6 +7,22 @@ loopback and uses a throwaway keypair generated at run time.
 Nothing here is part of the shipped gateway. The generated `private_key.pem` and
 `jwks.json` are disposable and git-ignored; do not commit them.
 
+## End-to-end harness (real MCP client and server)
+
+`run_e2e.ps1` drives the official MCP SDK end to end through the gateway:
+`real_upstream.py` is a real Streamable HTTP MCP server (stateless, JSON
+responses) used as the upstream, and `e2e_client.py` is a real SDK client that
+performs the full lifecycle (initialize, the mandatory
+`notifications/initialized` notification, `tools/list`, `tools/call`). It runs
+two phases: the builtin scope policy, then an explicit policy file. Both are
+expected to pass; a Phase A failure with a denied `notifications/initialized`
+audit line means the builtin policy has regressed on lifecycle coverage (the
+exact defect this harness was built to catch, and which
+`tests/test_mcp_method_surface.py` also pins at the unit level). Requires the
+`mcp` package, which the script installs into the active environment if
+missing. Windows PowerShell; on Linux, run the same three Python files with
+the same environment variables in three processes.
+
 ## Prerequisites
 
 The gateway installed (`pip install -e ".[dev]"` from the repo root) plus

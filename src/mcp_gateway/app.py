@@ -397,6 +397,25 @@ class _DuplicateKey(ValueError):
         super().__init__(f"duplicate JSON object member: {key!r}")
 
 
+class _NonFiniteConstant(ValueError):
+    def __init__(self, value: str) -> None:
+        self.value = value
+        super().__init__(f"non-standard JSON constant: {value}")
+
+
+def _reject_nonfinite(value: str) -> None:
+    """parse_constant hook: refuse NaN / Infinity / -Infinity.
+
+    Python's json.loads accepts these by default and json.dumps re-emits them,
+    but they are not RFC 8259 JSON. Letting them through would put non-standard
+    tokens in the canonical body, reintroducing a (mild) parser-family
+    divergence the canonicalization exists to eliminate: a lax upstream parses
+    them, a strict one rejects the whole request. Fail closed at the gateway
+    instead, matching the duplicate-key posture.
+    """
+    raise _NonFiniteConstant(value)
+
+
 def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
     """object_pairs_hook that rejects any object with a duplicate member name,
     recursively (it runs for every nested object). Python's default json.loads
@@ -418,6 +437,7 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     Fails closed. Returns an error (which the caller turns into a 400) for:
       - malformed / non-JSON bodies
       - objects containing duplicate member names (parser-differential guard)
+      - NaN / Infinity constants (not RFC 8259; parser-differential guard)
       - JSON-RPC batches (arrays): per-item authz is not implemented, so we
         refuse rather than forward a request whose methods we haven't checked
       - JSON that isn't an object
@@ -428,11 +448,20 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
     bytes, so the upstream parses exactly what the gateway authorized.
     """
     try:
-        data = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
+        data = json.loads(
+            raw,
+            object_pairs_hook=_no_duplicate_keys,
+            parse_constant=_reject_nonfinite,
+        )
     except _DuplicateKey as exc:
         return JsonRpcParse(
             error=f"request contains a duplicate JSON object member: {exc.key!r}",
             error_code="duplicate_json_key",
+        )
+    except _NonFiniteConstant as exc:
+        return JsonRpcParse(
+            error=f"request contains a non-standard JSON constant: {exc.value}",
+            error_code="nonstandard_json_constant",
         )
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
         return JsonRpcParse(error="request body is not valid JSON", error_code="invalid_json")

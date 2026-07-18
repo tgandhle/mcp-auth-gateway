@@ -40,20 +40,34 @@ class ScopePolicy:
 
     @staticmethod
     def builtin() -> ScopePolicy:
-        """A sane default policy. Read methods need mcp:read, anything that
-        executes or mutates needs mcp:invoke."""
+        """A sane default policy covering the full client-to-server MCP surface.
+
+        Read-shaped methods need mcp:read, anything that executes or mutates
+        needs mcp:invoke, and lifecycle traffic requires no scope beyond a
+        valid token. The ``notifications/`` prefix rule matters: a
+        spec-compliant client MUST send ``notifications/initialized`` right
+        after the initialize response, so denying it (as an earlier version of
+        this policy did) kills every session immediately after the handshake.
+        ``tests/test_mcp_method_surface.py`` walks the spec's client-to-server
+        method list against this policy so the gap cannot reopen.
+        """
         return ScopePolicy(
             rules={
                 "initialize": frozenset(),          # handshake, no scope
                 "ping": frozenset(),
+                # Client-to-server notifications (initialized, cancelled,
+                # progress, roots/list_changed). Mandatory lifecycle traffic;
+                # a valid token is still required by the auth layer.
+                "notifications/": frozenset(),
                 "tools/list": frozenset({"mcp:read"}),
                 "tools/call": frozenset({"mcp:invoke"}),
-                "resources/list": frozenset({"mcp:read"}),
-                "resources/read": frozenset({"mcp:read"}),
-                "resources/subscribe": frozenset({"mcp:read"}),
-                "prompts/list": frozenset({"mcp:read"}),
-                "prompts/get": frozenset({"mcp:read"}),
+                # Covers list, read, templates/list, subscribe, unsubscribe.
+                "resources/": frozenset({"mcp:read"}),
+                # Covers list and get.
+                "prompts/": frozenset({"mcp:read"}),
                 "completion/complete": frozenset({"mcp:invoke"}),
+                # Mutates server state; gate it like an invocation.
+                "logging/setLevel": frozenset({"mcp:invoke"}),
             },
             default=frozenset(),
             deny_by_default=True,
