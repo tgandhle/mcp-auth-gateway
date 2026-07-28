@@ -8,7 +8,8 @@ Flow for a proxied MCP request:
 Endpoints:
   POST /mcp                          the proxied MCP endpoint (protected)
   GET  /.well-known/oauth-protected-resource   RFC 9728 metadata (public)
-  GET  /healthz                      liveness (public)
+  GET  /livez                        process liveness (public)
+  GET  /readyz                       verification readiness (public)
 
 The 401 path returns a ``WWW-Authenticate`` header pointing at the
 protected-resource metadata, which is how spec-compliant MCP clients learn
@@ -43,13 +44,12 @@ _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length",
 }
-
-# Inbound headers a client could set to forge identity. Stripped before the
-# gateway injects its own verified values, so they can never be trusted from
-# the client side. Lowercased for case-insensitive matching.
-_SPOOFABLE_IDENTITY_HEADERS = {
-    "x-forwarded-sub", "x-forwarded-scopes", "x-user", "x-user-id",
-    "x-principal", "x-authenticated-user", "x-forwarded-user",
+# Client headers with defined MCP/HTTP tracing semantics that may cross the
+# trust boundary. Everything else is dropped; verified identity and request ID
+# are injected separately by the gateway.
+_FORWARDED_REQUEST_HEADERS = {
+    "accept", "accept-language", "content-type", "mcp-protocol-version",
+    "mcp-session-id", "last-event-id", "traceparent", "tracestate", "baggage",
 }
 
 
@@ -169,9 +169,22 @@ def create_app(
 
     app = FastAPI(title="MCP Auth Gateway", version="0.3.0", lifespan=lifespan)
 
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
+    @app.get("/livez")
+    @app.get("/healthz", include_in_schema=False)
+    async def livez() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> Response:
+        if not settings.require_auth:
+            return JSONResponse(status_code=200, content={"status": "ready"})
+        if verifier is None:
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        ready = await run_in_threadpool(verifier.ready)
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={"status": "ready" if ready else "not_ready"},
+        )
 
     @app.get("/.well-known/oauth-protected-resource")
     async def protected_resource_metadata() -> dict[str, Any]:
@@ -228,12 +241,18 @@ def create_app(
                 audit.emit()
                 return JSONResponse(status_code=413, content={"error": "payload_too_large", "detail": "request body exceeds limit"})
 
-        raw = await request.body()
-        if settings.max_request_bytes > 0 and len(raw) > settings.max_request_bytes:
-            audit.record.decision = "rejected"
-            audit.record.error_code = "payload_too_large"
-            audit.emit()
-            return JSONResponse(status_code=413, content={"error": "payload_too_large", "detail": "request body exceeds limit"})
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if settings.max_request_bytes > 0 and len(body) > settings.max_request_bytes:
+                audit.record.decision = "rejected"
+                audit.record.error_code = "payload_too_large"
+                audit.emit()
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "payload_too_large", "detail": "request body exceeds limit"},
+                )
+        raw = bytes(body)
 
         # 1. Authenticate.
         verified: VerifiedToken | None = None
@@ -324,20 +343,12 @@ def create_app(
                 audit.emit()
                 return _forbidden_tool(parsed.tool_name, tdecision.reason)
 
-        # 3. Reverse-proxy. Strip a known set of inbound identity-bearing
-        #    headers (see _SPOOFABLE_IDENTITY_HEADERS) before injecting verified
-        #    identity, so a client can't spoof those specific conventions. This
-        #    is a denylist and therefore not exhaustive: an upstream that trusts
-        #    a header not in that set (e.g. Remote-User, X-Auth-Request-User,
-        #    a vendor OIDC header) would still receive it. Configure the upstream
-        #    to trust only the gateway-generated X-Forwarded-* identity headers;
-        #    an outbound allowlist is a tracked hardening item.
+        # 3. Reverse-proxy. Forward only protocol/tracing headers with explicit
+        #    semantics, then inject gateway-owned correlation and verified
+        #    identity. Unknown client headers never cross this trust boundary.
         fwd_headers = {
             k: v for k, v in request.headers.items()
-            if k.lower() not in _HOP_BY_HOP
-            and k.lower() != "authorization"
-            and k.lower() != "x-request-id"
-            and k.lower() not in _SPOOFABLE_IDENTITY_HEADERS
+            if k.lower() in _FORWARDED_REQUEST_HEADERS
         }
         fwd_headers["X-Request-Id"] = audit.record.request_id
         if verified is not None:

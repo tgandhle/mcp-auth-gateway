@@ -115,6 +115,44 @@ class JwksVerifier:
         # fetch. Updating it on failure too means a down authorization server
         # is retried at most once per cooldown window, not once per request.
         self._last_fetch = float("-inf")
+        # Last successful, non-empty JWKS refresh. Readiness uses this rather
+        # than the last attempt so a failed refresh can never report healthy.
+        self._last_success = float("-inf")
+
+    def ready(self) -> bool:
+        """Return whether usable signing keys have been fetched recently.
+
+        A stale or empty cache triggers a single-flight refresh. Failures are
+        contained as a false readiness result and respect the normal cooldown.
+        """
+        with self._lock:
+            now = time.monotonic()
+            if self._keys and self._ttl > 0 and now - self._last_success <= self._ttl:
+                return True
+            if self._refreshing:
+                return False
+            if now - self._last_fetch < self._min_refresh_interval:
+                return False
+            self._refreshing = True
+
+        new_keys: dict[str, PyJWK] | None = None
+        try:
+            raw = self._fetch_jwks()
+            keyset = PyJWKSet.from_dict(raw)
+            new_keys = {k.key_id: k for k in keyset.keys if k.key_id}
+        except Exception:
+            new_keys = None
+        finally:
+            with self._lock:
+                now = time.monotonic()
+                self._refreshing = False
+                self._last_fetch = now
+                if new_keys:
+                    self._keys = new_keys
+                    self._last_success = now
+                self._refresh_done.notify_all()
+        return bool(new_keys)
+
     def _fetch_jwks(self) -> dict:
         """Fetch and return the raw JWKS document. The single network seam.
 
@@ -152,7 +190,7 @@ class JwksVerifier:
         with self._lock:
             now = time.monotonic()
             cold = self._last_fetch == float("-inf")
-            fresh = (not cold) and (now - self._last_fetch) <= self._ttl
+            fresh = self._ttl > 0 and (not cold) and (now - self._last_fetch) <= self._ttl
             key = self._keys.get(kid)
             if key is not None and fresh:
                 return key
@@ -174,7 +212,9 @@ class JwksVerifier:
             # advanced _last_fetch.
             now = time.monotonic()
             cold = self._last_fetch == float("-inf")
-            ttl_expired = (not cold) and (now - self._last_fetch) > self._ttl
+            ttl_expired = (not cold) and (
+                self._ttl == 0 or (now - self._last_fetch) > self._ttl
+            )
             cooldown_elapsed = (now - self._last_fetch) >= self._min_refresh_interval
             if not (cold or ttl_expired or cooldown_elapsed):
                 if key is not None:
@@ -199,6 +239,7 @@ class JwksVerifier:
                 self._last_fetch = time.monotonic()
                 if new_keys is not None:
                     self._keys = new_keys
+                    self._last_success = self._last_fetch
                 self._refresh_done.notify_all()
 
         if error is not None:

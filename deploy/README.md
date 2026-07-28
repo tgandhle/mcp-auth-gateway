@@ -6,10 +6,10 @@ boundary is enforced.
 
 ## The trust model (read this first)
 
-The gateway authenticates inbound requests, strips any client-supplied identity
-headers, and injects a **verified** `X-Forwarded-Sub` (and `X-Forwarded-Scopes`)
-before forwarding to the upstream MCP server. The upstream is expected to trust
-those forwarded headers.
+The gateway authenticates inbound requests, forwards only an explicit set of
+MCP protocol/tracing headers, and injects a **verified** `X-Forwarded-Sub` (and
+`X-Forwarded-Scopes`) before forwarding to the upstream MCP server. The
+upstream is expected to trust those forwarded headers.
 
 That trust is only safe under one precondition:
 
@@ -78,8 +78,9 @@ docker run --rm -p 8080:8080 \
   -e GATEWAY_JWKS_URL="https://issuer.example.com/.well-known/jwks.json" \
   mcp-auth-gateway:dev
 
-# Liveness:
-curl -fsS http://127.0.0.1:8080/healthz   # -> {"status":"ok"}
+# Process liveness and JWT-verification readiness:
+curl -fsS http://127.0.0.1:8080/livez
+curl -fsS http://127.0.0.1:8080/readyz
 ```
 
 ## Applying to a cluster

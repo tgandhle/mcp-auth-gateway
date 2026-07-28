@@ -39,6 +39,26 @@ def test_auth_off_without_jwks_url_passes():
     _valid(jwks_url=None, require_auth=False).validate_runtime()
 
 
+def test_plaintext_jwks_rejected_by_default():
+    with pytest.raises(ConfigError, match="must use https"):
+        _valid(jwks_url="http://issuer.test/jwks.json").validate_runtime()
+
+
+def test_plaintext_jwks_requires_explicit_dev_override():
+    _valid(
+        jwks_url="http://127.0.0.1:9001/jwks.json",
+        allow_insecure_jwks=True,
+    ).validate_runtime()
+
+
+def test_plaintext_jwks_override_cannot_target_remote_host():
+    with pytest.raises(ConfigError, match="loopback"):
+        _valid(
+            jwks_url="http://issuer.test/jwks.json",
+            allow_insecure_jwks=True,
+        ).validate_runtime()
+
+
 def test_empty_issuer_fails():
     s = _valid(issuer="   ")
     with pytest.raises(ConfigError) as ei:

@@ -45,8 +45,9 @@ point your MCP clients at the gateway, point the gateway at the server.
   `/.well-known/oauth-protected-resource` so spec-compliant MCP clients can
   discover which authorization server guards this resource. 401 responses
   carry a `WWW-Authenticate` header pointing at it.
-- **Identity forwarding.** Strips the inbound `Authorization` header before
-  proxying and passes verified `sub` / scopes to the upstream via
+- **Identity forwarding.** Uses an outbound allow-list for MCP protocol and
+  tracing headers, so arbitrary client headers never reach the upstream, and
+  passes verified `sub` / scopes via
   `X-Forwarded-Sub` / `X-Forwarded-Scopes`. The upstream trusts these only
   because it sits behind this gateway on a private network.
 - **PKCE helper.** RFC 7636 verifier/challenge generation and authorization-URL
@@ -59,7 +60,9 @@ point your MCP clients at the gateway, point the gateway at the server.
   handler to this logger so the lines are emitted as shipped; if you embed
   `create_app` directly, configure a handler for `mcp_gateway.audit` yourself.
 - **Resilience guards.** Configurable max request body size (default 5 MiB,
-  returns `413`) and per-phase upstream timeouts (connect/read/write/pool).
+  enforced incrementally and returning `413`) and per-phase upstream timeouts
+  (connect/read/write/pool). `/livez` reports process health; `/readyz` reports
+  ready only after a recent successful JWKS retrieval when auth is enabled.
 
 ## Why these choices
 
@@ -78,7 +81,8 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_UPSTREAM_URL` | yes | Backend MCP server URL, e.g. `http://127.0.0.1:9000/mcp` |
 | `GATEWAY_ISSUER` | yes | Required `iss` claim; also the auth-server id in metadata |
 | `GATEWAY_AUDIENCE` | yes | Required `aud` claim; this gateway's resource id |
-| `GATEWAY_JWKS_URL` | yes (if auth on) | JWKS endpoint of the authorization server |
+| `GATEWAY_JWKS_URL` | yes (if auth on) | HTTPS JWKS endpoint of the authorization server |
+| `GATEWAY_ALLOW_INSECURE_JWKS` | no | Default `false`; permits plaintext JWKS only when explicitly enabled for local development |
 | `GATEWAY_JWKS_MIN_REFRESH_INTERVAL` | no | Min seconds between JWKS refreshes forced by a `kid` miss; default `10`. Bounds outbound JWKS fetches under unknown-`kid` floods |
 | `GATEWAY_ALLOWED_ALGORITHMS` | no | Default `["RS256","ES256"]` |
 | `GATEWAY_ALLOWED_ORIGINS` | no | JSON list of origins (`["https://app.example.com"]`) allowed to send an `Origin` header; default `[]` rejects any present `Origin`. Absent `Origin` always passes |
@@ -105,11 +109,11 @@ mcp-gateway
 ```
 
 The gateway validates its configuration at startup and refuses to run on an
-unsafe or unusable config (auth enabled with no JWKS URL, a symmetric or `none`
-signing algorithm, a missing scope-policy file, out-of-range port or timeouts,
-a `public_base_url` with no scheme). All problems are reported together and the
-process exits non-zero, so misconfiguration is caught at boot rather than on the
-first request.
+unsafe or unusable config (auth enabled with no HTTPS JWKS URL, a symmetric or
+`none` signing algorithm, a missing scope-policy file, out-of-range port or
+timeouts, a `public_base_url` with no scheme). All problems are reported
+together and the process exits non-zero, so misconfiguration is caught at boot
+rather than on the first request.
 
 ## Scope policy file format
 
@@ -240,26 +244,7 @@ cannot invoke a tool).
 
 ### Known limitations (tracked hardening items)
 
-These are known gaps, stated plainly so the security posture isn't overstated.
-Each is a tracked item, not a claimed guarantee.
-
-- **Request-size limit.** An oversized numeric `Content-Length` is rejected
-  before the body is read, but a chunked or unlabeled body is buffered fully
-  before the size check, so the limit is not a hard memory bound in those cases.
-  Fix: enforce the cap while streaming the request. Pair with an ingress body
-  limit regardless.
-- **Outbound identity headers.** Inbound identity headers are stripped via a
-  denylist of known conventions, which is not exhaustive. An upstream that
-  trusts a header outside that set could be misled. Configure the upstream to
-  trust only the gateway-generated `X-Forwarded-*` identity headers. Fix: an
-  outbound allowlist forwarding only transport-required headers.
-- **Plaintext JWKS URL.** `GATEWAY_JWKS_URL` currently permits `http://`. Use
-  an `https://` endpoint; a future change will require TLS by default and allow
-  plaintext only for loopback/dev.
-- **Readiness vs. liveness.** `/healthz` serves both and always returns ok, so a
-  pod can be marked ready before it can retrieve verification keys. Fix: split
-  `/livez` (process alive) from `/readyz` (config, policy, and a recent JWKS
-  retrieval).
+These are boundaries that repository code alone cannot close:
 - **Kubernetes trust boundary.** The sample `NetworkPolicy` selects on the pod
   label `app: gateway`; it authenticates labels, not workload identity. Anyone
   able to create pods in the namespace with that label could reach the upstream.
@@ -271,6 +256,10 @@ Each is a tracked item, not a claimed guarantee.
   deliberate backward-compatible default, not a defect; configure a tool policy
   to enforce per-tool least privilege. A policy without `rules` grants the same
   tool set to every caller; use claim-bound rules to vary access by identity.
+- **Deployment validation remains required.** A real deployment still needs
+  issuer/JWKS and CA validation, ingress TLS, load testing, alerting, audit-log
+  retention, SLOs, and incident ownership. See
+  [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md).
 
 ## Security
 

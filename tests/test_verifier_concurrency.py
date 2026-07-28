@@ -142,6 +142,21 @@ def test_fetch_failure_is_token_error_and_starts_cooldown(monkeypatch, jwks, rsa
     assert attempts == 1
 
 
+def test_readiness_primes_cache_and_contains_fetch_failure(monkeypatch, jwks):
+    ready = make_verifier()
+    monkeypatch.setattr(ready, "_fetch_jwks", lambda: jwks)
+    assert ready.ready()
+    assert ready.ready()  # fresh cache: no additional requirement to fetch
+
+    unavailable = make_verifier()
+    monkeypatch.setattr(
+        unavailable,
+        "_fetch_jwks",
+        lambda: (_ for _ in ()).throw(OSError("unreachable")),
+    )
+    assert not unavailable.ready()
+
+
 def test_stale_key_served_during_refresh_window(monkeypatch, jwks, rsa_key):
     """A key past its TTL is served while a refresh is in flight rather than
     making every request wait on the fetch."""

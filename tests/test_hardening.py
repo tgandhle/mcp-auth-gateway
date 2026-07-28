@@ -116,6 +116,60 @@ def test_normal_body_under_limit_ok(monkeypatch, jwks, rsa_key):
     assert r.status_code == 200
 
 
+def test_streamed_body_is_capped_while_reading(monkeypatch, jwks, rsa_key):
+    c = _client(monkeypatch, jwks, max_request_bytes=100)
+    token = mint(rsa_key, scope="mcp:read")
+
+    def chunks():
+        yield b'{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"x":"'
+        yield b"A" * 200
+        yield b'"}}'
+
+    r = c.post("/mcp", content=chunks(), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 413
+    assert r.json()["error"] == "payload_too_large"
+
+
+@respx.mock
+def test_unknown_client_headers_never_reach_upstream(monkeypatch, jwks, rsa_key):
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    c = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read")
+    r = c.post(
+        "/mcp",
+        content=_rpc("tools/list"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Remote-User": "attacker",
+            "X-Vendor-Identity": "attacker",
+            "MCP-Protocol-Version": "2025-06-18",
+        },
+    )
+    assert r.status_code == 200
+    sent = route.calls.last.request.headers
+    assert "remote-user" not in sent
+    assert "x-vendor-identity" not in sent
+    assert sent["mcp-protocol-version"] == "2025-06-18"
+
+
+def test_liveness_does_not_depend_on_jwks(monkeypatch, jwks):
+    verifier = _verifier(monkeypatch, jwks)
+    monkeypatch.setattr(verifier, "ready", lambda: False)
+    c = TestClient(create_app(_settings(), verifier, ScopePolicy.builtin()))
+    assert c.get("/livez").status_code == 200
+    assert c.get("/healthz").status_code == 200
+
+
+def test_readiness_requires_usable_jwks(monkeypatch, jwks):
+    verifier = _verifier(monkeypatch, jwks)
+    c = TestClient(create_app(_settings(), verifier, ScopePolicy.builtin()))
+    assert c.get("/readyz").json() == {"status": "ready"}
+    monkeypatch.setattr(verifier, "ready", lambda: False)
+    r = c.get("/readyz")
+    assert r.status_code == 503
+    assert r.json() == {"status": "not_ready"}
+
+
 # --- Policy schema validation ---
 
 def test_policy_rejects_string_scope_value(tmp_path):

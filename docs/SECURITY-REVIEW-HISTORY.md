@@ -99,20 +99,30 @@ deployment as production-ready.
 
 ## Deferred items and rationale
 
-These are tracked, not dropped. Each is a backlog item with its own acceptance
-criteria.
+The repository-level hardening items from the earlier review are now resolved:
+JWKS work runs off-loop with bounded single-flight refreshes, request bodies are
+capped while streaming, outbound headers use an allow-list, Origin is
+validated, HTTPS JWKS is required by default, and liveness/readiness are split.
+The remaining items require either a release-pinning decision or a protocol/
+dependency compatibility decision.
 
 | Item | Why deferred |
 |---|---|
-| Off-event-loop JWKS retrieval | The fetch is bounded; moving I/O off the request loop is a separate change with its own slow-IdP and timeout tests |
-| Incremental inbound request-body limit | The cap is enforced after buffering for chunked/unlabeled bodies; enforcing it during streaming is a distinct change |
-| Outbound header allowlist | The current denylist covers common identity conventions; an allowlist is defense-in-depth over an already-working control |
-| MCP Origin validation | Not yet implemented; the DNS-rebinding defense is a tracked item |
-| HTTPS-only JWKS configuration | Plaintext JWKS URLs are permitted; requiring TLS by default is a config change |
-| Separate readiness and liveness | `/healthz` serves both; splitting `/livez` and `/readyz` is a tracked item |
 | Immutable action/image digest pinning | Requires verified SHA digests; these must be looked up and recorded, not fabricated, and are deferred rather than guessed |
 | JSON-RPC response-message proxy profile | A design decision (document the client-initiated profile, or build bidirectional support) |
 | Test-client deprecation (`starlette.testclient` / `httpx`) | Non-blocking; resolve via a supported FastAPI/Starlette upgrade when available |
+
+## Enterprise-readiness hardening
+
+- Incremental request-body enforcement closes the chunked/unlabeled buffering
+  gap.
+- An outbound request-header allow-list replaces identity-header enumeration.
+- Authenticated deployments require HTTPS JWKS; a plaintext override is limited
+  to loopback development.
+- `/livez` and JWKS-backed `/readyz` now have distinct operational semantics.
+- Zero-TTL JWKS refresh behavior is deterministic across timer resolutions.
+- `docs/PRODUCTION-READINESS.md` records the deployment evidence that cannot be
+  supplied by repository code alone.
 
 ## Review 3
 

@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     audience: str
     # JWKS endpoint of the authorization server. Required when auth is enabled.
     jwks_url: HttpUrl | None = None
+    # Permit plaintext JWKS only for explicitly acknowledged local development.
+    allow_insecure_jwks: bool = False
     # Allowed signing algorithms. RS256/ES256 only by default; never "none".
     allowed_algorithms: list[str] = Field(default_factory=lambda: ["RS256", "ES256"])
 
@@ -143,6 +145,26 @@ class Settings(BaseSettings):
             problems.append(
                 "GATEWAY_JWKS_URL is required when auth is enabled "
                 "(or set GATEWAY_REQUIRE_AUTH=false for local dev)"
+            )
+        if (
+            self.require_auth
+            and self.jwks_url is not None
+            and self.jwks_url.scheme != "https"
+            and not self.allow_insecure_jwks
+        ):
+            problems.append(
+                "GATEWAY_JWKS_URL must use https:// when auth is enabled "
+                "(set GATEWAY_ALLOW_INSECURE_JWKS=true only for local development)"
+            )
+        if (
+            self.require_auth
+            and self.jwks_url is not None
+            and self.jwks_url.scheme != "https"
+            and self.allow_insecure_jwks
+            and self.jwks_url.host not in {"localhost", "127.0.0.1", "::1"}
+        ):
+            problems.append(
+                "GATEWAY_ALLOW_INSECURE_JWKS may only be used with a loopback JWKS host"
             )
 
         # A scope policy file, if named, must exist and be readable now rather

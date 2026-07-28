@@ -62,11 +62,11 @@ invoke a tool.
 
 ### Client-supplied identity spoofing
 A caller sending its own `X-Forwarded-Sub` / `Authorization` header to
-pre-set or leak identity. **Defense:** the gateway strips inbound identity
-headers before proxying and injects only the `sub`/scopes it verified itself.
-The inbound `Authorization` header is not forwarded upstream. **Verify:**
-`src/mcp_gateway/app.py`; `tests/test_app.py` asserts the `Authorization`
-header is not forwarded.
+pre-set or leak identity. **Defense:** the gateway forwards only explicitly
+supported MCP protocol and distributed-tracing headers, then injects only the
+`sub`/scopes it verified itself. The inbound `Authorization` header and unknown
+identity conventions are not forwarded upstream. **Verify:**
+`src/mcp_gateway/app.py`; `tests/test_app.py`; `tests/test_hardening.py`.
 
 ### Parser-level authorization bypass
 A caller smuggling a method past the scope check via a batch array, malformed
@@ -125,6 +125,16 @@ enforce. **Defense:** the gateway validates its configuration at startup,
 collects every problem, and exits non-zero before serving traffic rather than
 failing per request. **Verify:** `src/mcp_gateway/config.py`
 (`validate_runtime`); `tests/test_config.py`.
+
+### Plaintext or unavailable JWKS
+An attacker on the JWKS network path substituting signing keys, or a pod being
+sent traffic before it can retrieve usable keys. **Defense:** authenticated
+deployments require an HTTPS JWKS URL unless an explicit development override
+is set. `/readyz` performs a bounded, single-flight JWKS refresh and returns
+`503` until a recent successful, non-empty key set is available; `/livez`
+remains independent for process restart decisions. **Verify:**
+`src/mcp_gateway/config.py`; `src/mcp_gateway/verifier.py`;
+`tests/test_config.py`; `tests/test_verifier_concurrency.py`.
 
 ### Audit correlation integrity
 A caller setting its own `X-Request-Id` to pollute, collide with, or forge the
