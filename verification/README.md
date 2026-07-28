@@ -49,6 +49,7 @@ export GATEWAY_UPSTREAM_URL=http://127.0.0.1:9000/mcp
 export GATEWAY_ISSUER=$ISSUER
 export GATEWAY_AUDIENCE=$AUDIENCE
 export GATEWAY_JWKS_URL=http://127.0.0.1:9001/.well-known/jwks.json
+export GATEWAY_ALLOW_INSECURE_JWKS=true  # loopback development only
 export GATEWAY_REQUIRE_AUTH=true
 mcp-gateway &
 
@@ -96,6 +97,7 @@ $env:GATEWAY_UPSTREAM_URL = "http://127.0.0.1:9000/mcp"
 $env:GATEWAY_ISSUER       = $Issuer
 $env:GATEWAY_AUDIENCE     = $Audience
 $env:GATEWAY_JWKS_URL     = "http://127.0.0.1:9001/.well-known/jwks.json"
+$env:GATEWAY_ALLOW_INSECURE_JWKS = "true" # loopback development only
 $env:GATEWAY_REQUIRE_AUTH = "true"
 
 # 3. Start each server exactly once. Do not relaunch a server that is already

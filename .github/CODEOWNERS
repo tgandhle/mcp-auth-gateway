@@ -1,0 +1,11 @@
+# Repository and security-control ownership.
+* @tgandhle
+
+# Changes to enforcement, deployment, evidence, or approval controls require
+# review from the repository owner when branch protection enables CODEOWNERS.
+/src/mcp_gateway/ @tgandhle
+/deploy/ @tgandhle
+/docs/THREAT-MODEL.md @tgandhle
+/docs/APPROVAL-POLICY.md @tgandhle
+/evidence/ @tgandhle
+/.github/ @tgandhle

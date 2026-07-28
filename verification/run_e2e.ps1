@@ -1,3 +1,7 @@
+param(
+  [string]$PythonPath = "python"
+)
+
 # run_e2e.ps1 v3 -- end-to-end MCP client verification of mcp-auth-gateway.
 # Compatible with Windows PowerShell 5.1 and PowerShell 7.
 #
@@ -23,6 +27,13 @@
 $ErrorActionPreference = "Continue"
 Write-Host "run_e2e.ps1 v3"
 
+# Some Windows hosts expose both `Path` and `PATH`. Start-Process builds a
+# case-insensitive environment dictionary and rejects that duplicate. Normalize
+# the process environment before launching any child processes.
+$processPath = [Environment]::GetEnvironmentVariable("Path", "Process")
+[Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+[Environment]::SetEnvironmentVariable("Path", $processPath, "Process")
+
 $vdir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 Set-Location $vdir
 
@@ -37,18 +48,20 @@ $Audience = "mcp-gateway"
 $GwUrl    = "http://127.0.0.1:8080/mcp"
 
 # ---------------------------------------------------------------- preflight --
-$null = & python -c "import mcp_gateway" 2>&1
+$null = & $PythonPath -c "import mcp_gateway" 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Host "mcp_gateway is not importable by 'python'."
   Write-Host "Activate the venv, then from the repo root: pip install -e `".[dev]`""
   exit 1
 }
-$null = & python -c "import mcp" 2>&1
+$null = & $PythonPath -c "import mcp" 2>&1
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "Installing the official MCP SDK (pip install mcp)..."
-  $null = & python -m pip install --quiet mcp 2>&1
-  if ($LASTEXITCODE -ne 0) { Write-Host "pip install mcp failed; run it manually and retry."; exit 1 }
+  Write-Host "Installing the verified MCP SDK version (mcp==1.28.1)..."
+  $null = & $PythonPath -m pip install --quiet "mcp==1.28.1" 2>&1
+  if ($LASTEXITCODE -ne 0) { Write-Host "installing mcp==1.28.1 failed; run it manually and retry."; exit 1 }
 }
+$mcpVersion = (& $PythonPath -c "import importlib.metadata; print(importlib.metadata.version('mcp'))" 2>&1 | Select-Object -Last 1)
+Write-Host "MCP SDK version: $mcpVersion"
 
 # ------------------------------------------------- write the helper scripts --
 $u8 = New-Object System.Text.UTF8Encoding($false)
@@ -159,7 +172,7 @@ function Wait-Http($u, $tries = 30) {
 $script:started = @()
 function Start-Tracked($arglist, $errFile) {
   $outFile = [System.IO.Path]::ChangeExtension($errFile, ".out")
-  $p = Start-Process python -ArgumentList $arglist -WorkingDirectory $vdir `
+  $p = Start-Process $PythonPath -ArgumentList $arglist -WorkingDirectory $vdir `
         -WindowStyle Hidden -PassThru `
         -RedirectStandardError $errFile -RedirectStandardOutput $outFile
   $script:started += $p
@@ -175,7 +188,7 @@ function Stop-Started {
 try {
   # ------------------------------------------------------------ fixed infra --
   if (-not (Test-Path (Join-Path $vdir "private_key.pem"))) {
-    $null = & python gen_keys.py 2>&1
+    $null = & $PythonPath gen_keys.py 2>&1
     if ($LASTEXITCODE -ne 0) { Write-Host "gen_keys.py failed"; exit 1 }
   }
 
@@ -183,6 +196,7 @@ try {
   $env:GATEWAY_ISSUER       = $Issuer
   $env:GATEWAY_AUDIENCE     = $Audience
   $env:GATEWAY_JWKS_URL     = "http://127.0.0.1:9001/.well-known/jwks.json"
+  $env:GATEWAY_ALLOW_INSECURE_JWKS = "true"
   $env:GATEWAY_REQUIRE_AUTH = "true"
   Remove-Item Env:\GATEWAY_SCOPE_POLICY_FILE -ErrorAction SilentlyContinue
 
@@ -192,7 +206,7 @@ try {
   if (-not (Wait-Http "http://127.0.0.1:9001/.well-known/jwks.json")) { Write-Host "JWKS never came up (see jwks.err)"; exit 1 }
   if (-not (Wait-Http "http://127.0.0.1:9000/mcp")) { Write-Host "MCP upstream never came up (see upstream.err)"; exit 1 }
 
-  $Token = (& python mint_token.py valid --issuer $Issuer --audience $Audience 2>&1 | Select-Object -Last 1)
+  $Token = (& $PythonPath mint_token.py valid --issuer $Issuer --audience $Audience 2>&1 | Select-Object -Last 1)
   if ($LASTEXITCODE -ne 0 -or -not $Token) { Write-Host "token minting failed"; exit 1 }
   $Token = "$Token".Trim()
 
@@ -211,7 +225,7 @@ try {
     # Start-Process redirection: the client's stdout/stderr go straight to
     # files at the OS level. PowerShell's error stream is never involved, so
     # no NativeCommandError is possible here on any PS version.
-    $cp = Start-Process python -ArgumentList @("e2e_client.py", $GwUrl, $Token) `
+    $cp = Start-Process $PythonPath -ArgumentList @("e2e_client.py", $GwUrl, $Token) `
           -WorkingDirectory $vdir -WindowStyle Hidden -PassThru -Wait `
           -RedirectStandardOutput $clientOut -RedirectStandardError $clientErr
     $code = $cp.ExitCode
