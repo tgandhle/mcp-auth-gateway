@@ -153,6 +153,39 @@ rest).
 }
 ```
 
+### Binding tools to identity
+
+A flat allow-list grants the same tools to every caller. To vary the permitted
+set by identity, add `rules`. Each rule grants tools to callers holding any of
+the listed claim values, normally group membership:
+
+```json
+{
+  "claim": "groups",
+  "allowed_tools": ["list_directory"],
+  "rules": [
+    {"name": "readers", "any_of": ["mcp-readers"], "allowed_tools": ["read_file"]},
+    {"name": "operators", "any_of": ["mcp-operators"], "allowed_tools": ["write_file"]}
+  ]
+}
+```
+
+The caller receives the top-level `allowed_tools` plus the tools from every
+matching rule. No match grants nothing, preserving deny-by-default. `claim`
+defaults to `groups`, but can be set to the issuer's exact claim name, such as
+`memberOf`. See
+[`examples/tool-policy-claims.json`](examples/tool-policy-claims.json) for a
+complete example.
+
+This mechanism is identity-provider-neutral. The gateway does not acquire
+tokens or implement an issuer-specific login flow; it evaluates claims only
+after the existing JWT verifier has authenticated the presented token.
+
+Claim values are parsed strictly. A string is one value and is never split on
+whitespace. A list must contain only non-empty strings. Malformed or absent
+claims cannot match a rule, and unknown policy keys are rejected at startup
+instead of being silently ignored.
+
 Point the gateway at it with `GATEWAY_TOOL_POLICY_FILE=examples/tool-policy.json`.
 
 Behavior, when a tool policy is configured:
@@ -175,7 +208,8 @@ without setting the variable changes nothing.
 The check runs after the scope check, so scope is the outer gate: a token
 lacking `mcp:invoke` is stopped with `insufficient_scope` before the tool
 allow-list is consulted. Every tool decision is written to the audit log with
-the `tool_name` and the decision, alongside the existing scope decision fields.
+the `tool_name`, matching `tool_rule` (for allowed calls), and the decision,
+alongside the existing scope decision fields.
 
 ## Tests
 
@@ -235,7 +269,8 @@ Each is a tracked item, not a claimed guarantee.
 - **Tool policy is opt-in.** With no `GATEWAY_TOOL_POLICY_FILE` set, a token
   holding `mcp:invoke` may call any tool the upstream exposes. This is a
   deliberate backward-compatible default, not a defect; configure a tool policy
-  to enforce per-tool least privilege.
+  to enforce per-tool least privilege. A policy without `rules` grants the same
+  tool set to every caller; use claim-bound rules to vary access by identity.
 
 ## Security
 

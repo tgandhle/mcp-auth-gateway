@@ -43,6 +43,9 @@ class AuditRecord:
     # every other method. Recorded so a SIEM can see which tool was authorized
     # or denied, not just that a tools/call happened.
     tool_name: str | None = None
+    # The rule that authorized a tool call, or "[unconditional]" for the
+    # top-level allow-list. Omitted on denials because no grant matched.
+    tool_rule: str | None = None
     decision: str = "pending"          # allowed | denied | rejected | error
     error_code: str | None = None
     reason: str | None = None
@@ -67,6 +70,7 @@ class AuditRecord:
             "audience": self.audience,
             "method": self.method,
             "tool_name": self.tool_name,
+            "tool_rule": self.tool_rule,
             "decision": self.decision,
             "error_code": self.error_code,
             "reason": self.reason,

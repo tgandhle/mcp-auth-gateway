@@ -53,6 +53,7 @@ def mint(
     exp_delta: int = 300,
     kid: str = KID,
     alg: str = "RS256",
+    extra_claims: dict | None = None,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -63,4 +64,6 @@ def mint(
         "exp": now + exp_delta,
         "scope": scope,
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, rsa_key, algorithm=alg, headers={"kid": kid})

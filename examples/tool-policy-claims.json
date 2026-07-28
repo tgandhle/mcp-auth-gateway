@@ -1,0 +1,18 @@
+{
+  "claim": "groups",
+  "allowed_tools": [
+    "list_directory"
+  ],
+  "rules": [
+    {
+      "name": "readers",
+      "any_of": ["mcp-readers"],
+      "allowed_tools": ["read_file", "search_documents"]
+    },
+    {
+      "name": "operators",
+      "any_of": ["mcp-operators", "platform-oncall"],
+      "allowed_tools": ["write_file", "restart_service"]
+    }
+  ]
+}

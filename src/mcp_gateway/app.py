@@ -311,7 +311,12 @@ def create_app(
                         "detail": "tools/call request missing a string 'params.name'",
                     },
                 )
-            tdecision = tool_policy.check(parsed.tool_name)
+            # Claims come only from the verified token. With auth disabled
+            # (development mode), claim-bound rules cannot match.
+            tdecision = tool_policy.check(
+                parsed.tool_name, verified.claims if verified is not None else None
+            )
+            audit.record.tool_rule = tdecision.matched_rule
             if not tdecision.allowed:
                 audit.record.decision = "denied"
                 audit.record.error_code = "tool_not_allowed"
