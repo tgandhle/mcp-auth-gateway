@@ -5,8 +5,8 @@
 
 ## Provenance
 
-- Generated (UTC): 2026-07-28T23:54:44Z
-- Commit: c913dda226a1c3a38e0729b9ff93458003b4c68d
+- Generated (UTC): 2026-07-29T00:11:39Z
+- Commit: d85508de2909cbc4d29d2d160f98c57295a04711
 - Branch: main
 - Worktree: clean
 - Platform: Microsoft Windows NT 10.0.26100.0
@@ -17,10 +17,10 @@
 
 | Gate | Command | Status | Exit | Evidence |
 |---|---|---|---:|---|
-| Tests | C:\Users\admin\OneDrive\Documents\mcp-auth-gateway\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider | PASS | 0 | ........................................................................ [ 76%] / ............................................                             [100%] / 188 passed in 28.94s |
-| Lint | C:\Users\admin\OneDrive\Documents\mcp-auth-gateway\.venv\Scripts\python.exe -m ruff check src tests | PASS | 0 | All checks passed! |
-| Type check | C:\Users\admin\OneDrive\Documents\mcp-auth-gateway\.venv\Scripts\python.exe -m mypy src | PASS | 0 | Success: no issues found in 9 source files |
-| SAST | C:\Users\admin\OneDrive\Documents\mcp-auth-gateway\.venv\Scripts\python.exe -m bandit -c pyproject.toml -r src -q | PASS | 0 | no output |
+| Tests | .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider | PASS | 0 | ........................................................................ [ 76%] / ............................................                             [100%] / 188 passed in 41.33s |
+| Lint | .\.venv\Scripts\python.exe -m ruff check src tests | PASS | 0 | All checks passed! |
+| Type check | .\.venv\Scripts\python.exe -m mypy src | PASS | 0 | Success: no issues found in 9 source files |
+| SAST | .\.venv\Scripts\python.exe -m bandit -c pyproject.toml -r src -q | PASS | 0 | no output |
 | Official MCP SDK 1.28.1 end-to-end | verification/run_e2e.ps1 | PASS | - |  / === VERDICT === /   Audit (phase A): no denial recorded (expected after the lifecycle fix; a denial here means the builtin policy regressed). /   Audit (phase B): allowed-decision audit lines visible: 8 /     (a successful session should show several; 0 means the audit handler regressed) /  /   FINDING NOT REPRODUCED: both phases succeeded. Either the policy has been /   fixed or this client SDK version tolerates the failed notification. |
 
 ## External environment evidence
