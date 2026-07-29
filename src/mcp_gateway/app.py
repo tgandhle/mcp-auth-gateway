@@ -32,6 +32,7 @@ from .audit import AuditContext, new_request_id
 from .config import Settings
 from .policy import ScopePolicy
 from .tool_policy import ToolPolicy
+from .tools_list import FILTER_FAILED, UPSTREAM_ERROR, filter_tools_list
 from .verifier import JwksVerifier, TokenError, VerifiedToken
 
 # JSON-RPC / HTTP constants
@@ -51,6 +52,10 @@ _FORWARDED_REQUEST_HEADERS = {
     "accept", "accept-language", "content-type", "mcp-protocol-version",
     "mcp-session-id", "last-event-id", "traceparent", "tracestate",
 }
+# Only protocol state survives when the gateway rewrites a response body.
+# Representation metadata and unknown upstream headers describe bytes that no
+# longer exist or have semantics the gateway has not evaluated.
+_FILTERED_RESPONSE_HEADERS = {"mcp-session-id", "mcp-protocol-version"}
 
 
 @dataclass
@@ -117,6 +122,18 @@ def _forbidden(detail: str, required: list[str]) -> JSONResponse:
         status_code=403,
         content={"error": "insufficient_scope", "detail": detail, "required_scopes": required},
         headers={"WWW-Authenticate": f'Bearer error="insufficient_scope", scope="{" ".join(required)}"'},
+    )
+
+
+def _tools_list_error(audit: AuditContext, code: str, detail: str) -> JSONResponse:
+    """Return a pre-response, fail-closed tools/list filtering error."""
+    audit.record.decision = "rejected"
+    audit.record.error_code = code
+    audit.record.reason = detail
+    audit.emit()
+    return JSONResponse(
+        status_code=502,
+        content={"error": code, "detail": detail},
     )
 
 
@@ -374,6 +391,87 @@ def create_app(
             audit.record.reason = exc.__class__.__name__
             audit.emit()
             return JSONResponse(status_code=502, content={"error": "bad_gateway", "detail": f"upstream unreachable: {exc.__class__.__name__}"})
+
+        # 3b. tools/list filtering (opt-in). Only this method/status branch is
+        # buffered; all other responses retain the existing streaming path.
+        if (
+            tool_policy is not None
+            and parsed.method == "tools/list"
+            and upstream.status_code == 200
+        ):
+            audit.record.upstream_status = upstream.status_code
+            media_type = (
+                upstream.headers.get("content-type", "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            if media_type != "application/json":
+                await upstream_cm.__aexit__(None, None, None)
+                return _tools_list_error(
+                    audit,
+                    "tools_list_filter_unsupported_media_type",
+                    "tools/list response media type cannot be filtered",
+                )
+
+            body = bytearray()
+            read_error: str | None = None
+            try:
+                # Decoded bytes are the security/resource boundary. Counting
+                # raw compressed bytes would permit a small gzip body to expand
+                # beyond the in-memory cap.
+                async for chunk in upstream.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > settings.max_tools_list_bytes:
+                        read_error = "tools_list_response_too_large"
+                        break
+            except httpx.HTTPError:
+                read_error = "tools_list_read_failed"
+            finally:
+                await upstream_cm.__aexit__(None, None, None)
+
+            if read_error is not None:
+                detail = (
+                    "tools/list response exceeds filtering limit"
+                    if read_error == "tools_list_response_too_large"
+                    else "tools/list response could not be read"
+                )
+                return _tools_list_error(audit, read_error, detail)
+
+            outcome = filter_tools_list(
+                bytes(body),
+                tool_policy,
+                verified.claims if verified is not None else None,
+            )
+            if not outcome.ok or outcome.body is None:
+                code = outcome.error_code or FILTER_FAILED
+                detail = (
+                    "upstream returned a JSON-RPC error that was not relayed"
+                    if code == UPSTREAM_ERROR
+                    else "tools/list response could not be filtered"
+                )
+                return _tools_list_error(
+                    audit,
+                    code,
+                    detail,
+                )
+
+            audit.record.decision = "allowed"
+            audit.record.tools_returned = outcome.tools_returned
+            audit.record.tools_filtered = outcome.tools_filtered
+            audit.emit()
+            response_headers = {
+                key: value
+                for key, value in upstream.headers.items()
+                if key.lower() in _FILTERED_RESPONSE_HEADERS
+            }
+            response_headers["Cache-Control"] = "no-store"
+            return Response(
+                content=outcome.body,
+                status_code=200,
+                headers=response_headers,
+                media_type="application/json",
+            )
 
         # Response-size cap, clean path: if the upstream declares a Content-Length
         # larger than the cap, reject with 413 before any body is streamed. The

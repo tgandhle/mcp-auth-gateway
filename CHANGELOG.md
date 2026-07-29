@@ -6,6 +6,14 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+### Security
+
+- Policy-enabled `tools/list` responses are filtered with the same claim-aware
+  tool decision used by `tools/call`, reducing disclosure of unreachable tool
+  names and schemas. Filtering is limited to successful JSON responses, uses a
+  dedicated decoded-body cap, rebuilds response headers with `no-store`, and
+  fails closed on malformed, oversized, unreadable, or SSE responses.
+
 ### Fixed
 
 - `:latest` no longer regresses to an older release line. The publish workflow

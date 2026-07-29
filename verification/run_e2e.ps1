@@ -2,7 +2,7 @@ param(
   [string]$PythonPath = "python"
 )
 
-# run_e2e.ps1 v3 -- end-to-end MCP client verification of mcp-auth-gateway.
+# run_e2e.ps1 v4 -- end-to-end MCP client verification of mcp-auth-gateway.
 # Compatible with Windows PowerShell 5.1 and PowerShell 7.
 #
 # Committed as a regression harness for the lifecycle-coverage fix: with the
@@ -25,7 +25,7 @@ param(
 #          flow (initialize, tools/list, tools/call) succeeds.
 
 $ErrorActionPreference = "Continue"
-Write-Host "run_e2e.ps1 v3"
+Write-Host "run_e2e.ps1 v4"
 
 # Some Windows hosts expose both `Path` and `PATH`. Start-Process builds a
 # case-insensitive environment dictionary and rejects that duplicate. Normalize
@@ -46,6 +46,8 @@ if (-not (Test-Path (Join-Path $vdir "gen_keys.py"))) {
 $Issuer   = "https://issuer.test"
 $Audience = "mcp-gateway"
 $GwUrl    = "http://127.0.0.1:8080/mcp"
+$JsonUpstreamUrl = "http://127.0.0.1:9000/mcp"
+$SseUpstreamUrl = "http://127.0.0.1:9002/mcp"
 
 # ---------------------------------------------------------------- preflight --
 $null = & $PythonPath -c "import mcp_gateway" 2>&1
@@ -159,6 +161,13 @@ $fixedPolicy = @'
 '@
 [System.IO.File]::WriteAllText((Join-Path $vdir "scope-policy-fixed.json"), $fixedPolicy, $u8)
 
+$toolPolicy = @'
+{
+  "allowed_tools": ["echo"]
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $vdir "tool-policy-e2e.json"), $toolPolicy, $u8)
+
 # ------------------------------------------------------------------ helpers --
 function Wait-Http($u, $tries = 30) {
   for ($i = 0; $i -lt $tries; $i++) {
@@ -192,27 +201,33 @@ try {
     if ($LASTEXITCODE -ne 0) { Write-Host "gen_keys.py failed"; exit 1 }
   }
 
-  $env:GATEWAY_UPSTREAM_URL = "http://127.0.0.1:9000/mcp"
+  $env:GATEWAY_UPSTREAM_URL = $JsonUpstreamUrl
   $env:GATEWAY_ISSUER       = $Issuer
   $env:GATEWAY_AUDIENCE     = $Audience
   $env:GATEWAY_JWKS_URL     = "http://127.0.0.1:9001/.well-known/jwks.json"
   $env:GATEWAY_ALLOW_INSECURE_JWKS = "true"
   $env:GATEWAY_REQUIRE_AUTH = "true"
   Remove-Item Env:\GATEWAY_SCOPE_POLICY_FILE -ErrorAction SilentlyContinue
+  Remove-Item Env:\GATEWAY_TOOL_POLICY_FILE -ErrorAction SilentlyContinue
 
   $null = Start-Tracked @("jwks_server.py")   (Join-Path $vdir "jwks.err")
   $null = Start-Tracked @("real_upstream.py") (Join-Path $vdir "upstream.err")
+  $null = Start-Tracked @("real_upstream_sse.py") (Join-Path $vdir "upstream_sse.err")
 
   if (-not (Wait-Http "http://127.0.0.1:9001/.well-known/jwks.json")) { Write-Host "JWKS never came up (see jwks.err)"; exit 1 }
   if (-not (Wait-Http "http://127.0.0.1:9000/mcp")) { Write-Host "MCP upstream never came up (see upstream.err)"; exit 1 }
+  if (-not (Wait-Http "http://127.0.0.1:9002/mcp")) { Write-Host "SSE MCP upstream never came up (see upstream_sse.err)"; exit 1 }
 
   $Token = (& $PythonPath mint_token.py valid --issuer $Issuer --audience $Audience 2>&1 | Select-Object -Last 1)
   if ($LASTEXITCODE -ne 0 -or -not $Token) { Write-Host "token minting failed"; exit 1 }
   $Token = "$Token".Trim()
 
-  function Run-Phase($name, $policyFile) {
+  function Run-Phase($name, $policyFile, $toolPolicyFile, $upstreamUrl) {
     if ($policyFile) { $env:GATEWAY_SCOPE_POLICY_FILE = $policyFile }
     else             { Remove-Item Env:\GATEWAY_SCOPE_POLICY_FILE -ErrorAction SilentlyContinue }
+    if ($toolPolicyFile) { $env:GATEWAY_TOOL_POLICY_FILE = $toolPolicyFile }
+    else                 { Remove-Item Env:\GATEWAY_TOOL_POLICY_FILE -ErrorAction SilentlyContinue }
+    $env:GATEWAY_UPSTREAM_URL = $upstreamUrl
 
     $gwErr = Join-Path $vdir "gateway_$name.err"
     $gw = Start-Tracked @("-m", "mcp_gateway") $gwErr
@@ -237,8 +252,10 @@ try {
     return @{ exit = $code; gwErr = $gwErr }
   }
 
-  $a = Run-Phase "A_builtin" $null
-  $b = Run-Phase "B_fixed"   (Join-Path $vdir "scope-policy-fixed.json")
+  $a = Run-Phase "A_builtin" $null $null $JsonUpstreamUrl
+  $b = Run-Phase "B_fixed" (Join-Path $vdir "scope-policy-fixed.json") $null $JsonUpstreamUrl
+  $c = Run-Phase "C_sse_filter" (Join-Path $vdir "scope-policy-fixed.json") `
+       (Join-Path $vdir "tool-policy-e2e.json") $SseUpstreamUrl
 
   # ------------------------------------------------------------------ verdict --
   Write-Host ""
@@ -266,17 +283,33 @@ try {
   Write-Host "  Audit (phase B): allowed-decision audit lines visible: $($bAudit.Count)"
   Write-Host "    (a successful session should show several; 0 means the audit handler regressed)"
 
-  if (($a.exit -ne 0) -and ($denied.Count -gt 0) -and ($b.exit -eq 0)) {
+  $sseDenied = @()
+  $cOut = $c.gwErr -replace "\.err$", ".out"
+  foreach ($f in @($cOut, $c.gwErr)) {
+    if (Test-Path $f) {
+      $sseDenied += @(Select-String -Path $f `
+        -Pattern 'tools_list_filter_unsupported_media_type' -SimpleMatch)
+    }
+  }
+  if (($c.exit -ne 0) -and ($sseDenied.Count -gt 0)) {
+    Write-Host "  SSE filter boundary: PASS (tools/list failed closed with the expected 502 code)"
+  } else {
+    Write-Host "  SSE filter boundary: FAIL (expected client failure and distinct gateway audit code)"
+  }
+
+  if (($a.exit -ne 0) -and ($denied.Count -gt 0) -and ($b.exit -eq 0) `
+      -and ($c.exit -ne 0) -and ($sseDenied.Count -gt 0)) {
     Write-Host ""
     Write-Host "  FINDING CONFIRMED: the builtin scope policy 403s the mandatory"
     Write-Host "  notifications/initialized notification, breaking a spec-compliant MCP"
     Write-Host "  client immediately after the handshake. Adding a 'notifications/': []"
     Write-Host "  rule restores full end-to-end operation (initialize, tools/list, tools/call)."
     exit 0
-  } elseif (($a.exit -eq 0) -and ($b.exit -eq 0)) {
+  } elseif (($a.exit -eq 0) -and ($b.exit -eq 0) -and ($c.exit -ne 0) `
+            -and ($sseDenied.Count -gt 0)) {
     Write-Host ""
-    Write-Host "  FINDING NOT REPRODUCED: both phases succeeded. Either the policy has been"
-    Write-Host "  fixed or this client SDK version tolerates the failed notification."
+    Write-Host "  PASS: JSON-mode SDK sessions succeeded and the default-SSE tools/list"
+    Write-Host "  response failed closed with the documented gateway error."
     exit 0
   } else {
     Write-Host ""
@@ -287,5 +320,6 @@ try {
 }
 finally {
   Stop-Started
+  Remove-Item (Join-Path $vdir "tool-policy-e2e.json") -Force -ErrorAction SilentlyContinue
 }
 

@@ -193,3 +193,25 @@ def test_negative_max_response_bytes_fails():
     with pytest.raises(ConfigError) as ei:
         s.validate_runtime()
     assert any("GATEWAY_MAX_RESPONSE_BYTES" in p for p in ei.value.problems)
+
+
+def test_tools_list_cap_must_be_positive():
+    with pytest.raises(ConfigError) as ei:
+        _valid(max_tools_list_bytes=0).validate_runtime()
+    assert any("GATEWAY_MAX_TOOLS_LIST_BYTES" in p for p in ei.value.problems)
+
+
+def test_tools_list_cap_must_be_smaller_than_general_cap():
+    with pytest.raises(ConfigError) as ei:
+        _valid(
+            max_response_bytes=1024,
+            max_tools_list_bytes=1024,
+        ).validate_runtime()
+    assert any("smaller than GATEWAY_MAX_RESPONSE_BYTES" in p for p in ei.value.problems)
+
+
+def test_tools_list_cap_allowed_when_general_cap_disabled():
+    _valid(
+        max_response_bytes=0,
+        max_tools_list_bytes=1024,
+    ).validate_runtime()

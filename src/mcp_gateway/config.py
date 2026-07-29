@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     # stops and terminates the connection (the status/headers are already sent,
     # so a clean 413 is no longer possible). 0 = no limit.
     max_response_bytes: int = 10 * 1024 * 1024
+    # Decoded tools/list responses are buffered when tool filtering is active,
+    # so this dedicated memory bound is always positive and tighter than the
+    # general response cap (when that cap is enabled).
+    max_tools_list_bytes: int = 1024 * 1024
 
     # Public base URL the gateway is reached at (e.g. https://mcp.example.com),
     # used to build the RFC 9728 metadata and WWW-Authenticate URLs correctly
@@ -202,6 +206,19 @@ class Settings(BaseSettings):
             problems.append(
                 f"GATEWAY_MAX_RESPONSE_BYTES must be >= 0 (0 disables the limit), "
                 f"got {self.max_response_bytes}"
+            )
+        if self.max_tools_list_bytes <= 0:
+            problems.append(
+                "GATEWAY_MAX_TOOLS_LIST_BYTES must be > 0, "
+                f"got {self.max_tools_list_bytes}"
+            )
+        if (
+            self.max_response_bytes > 0
+            and self.max_tools_list_bytes >= self.max_response_bytes
+        ):
+            problems.append(
+                "GATEWAY_MAX_TOOLS_LIST_BYTES must be smaller than "
+                "GATEWAY_MAX_RESPONSE_BYTES"
             )
         if self.upstream_timeout <= 0:
             problems.append(

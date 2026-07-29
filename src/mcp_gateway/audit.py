@@ -46,6 +46,9 @@ class AuditRecord:
     # The rule that authorized a tool call, or "[unconditional]" for the
     # top-level allow-list. Omitted on denials because no grant matched.
     tool_rule: str | None = None
+    # Counts only, never entitlement-bearing tool names.
+    tools_returned: int | None = None
+    tools_filtered: int | None = None
     decision: str = "pending"          # allowed | denied | rejected | error
     error_code: str | None = None
     reason: str | None = None
@@ -71,6 +74,8 @@ class AuditRecord:
             "method": self.method,
             "tool_name": self.tool_name,
             "tool_rule": self.tool_rule,
+            "tools_returned": self.tools_returned,
+            "tools_filtered": self.tools_filtered,
             "decision": self.decision,
             "error_code": self.error_code,
             "reason": self.reason,
