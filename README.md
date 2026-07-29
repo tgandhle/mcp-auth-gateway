@@ -273,7 +273,8 @@ Repository approval is governed by the
 [current technical evidence](evidence/CURRENT.md). That evidence intentionally
 keeps target-environment checks and human decisions pending until they are
 actually performed. GitHub branch protection is also documented there as a
-target control and is not currently enforced server-side.
+verified server-side control requiring pull requests, passing checks, and Code
+Owner approval.
 
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
