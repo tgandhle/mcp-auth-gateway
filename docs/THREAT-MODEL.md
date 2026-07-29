@@ -68,6 +68,12 @@ supported MCP protocol and distributed-tracing headers, then injects only the
 identity conventions are not forwarded upstream. **Verify:**
 `src/mcp_gateway/app.py`; `tests/test_app.py`; `tests/test_hardening.py`.
 
+W3C `baggage` is deliberately not forwarded. Unlike the constrained
+`traceparent` and `tracestate` formats, baggage is arbitrary client-controlled
+key/value data, and downstream use is unknown. Dropping it at this boundary
+prevents untrusted tenant, environment, or telemetry attributes from being
+injected into internal systems.
+
 ### Parser-level authorization bypass
 A caller smuggling a method past the scope check via a batch array, malformed
 JSON, or a JSON-RPC object with no string `method`. **Defense:** the

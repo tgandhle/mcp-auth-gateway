@@ -15,7 +15,8 @@ standard.
 | Operations owner | Owns SLOs, alerts, on-call response, and audit retention | Pending organizational assignment |
 
 One person may fill multiple roles only when organizational policy permits it.
-Codex and automated checks produce evidence but cannot grant human approval.
+Automated checks and AI assistants produce evidence but cannot grant human
+approval.
 
 ## Required gates
 
@@ -51,6 +52,13 @@ For `main`, enable branch protection or a ruleset requiring:
 
 These server-side settings must be confirmed in GitHub; committing a
 `CODEOWNERS` file does not enable them by itself.
+
+**Current enforcement status (verified 2026-07-28): NOT ENABLED.** GitHub
+reported `main` as unprotected, and the approval-framework commits were pushed
+directly rather than merged through pull requests. The controls above are
+documented target state until a repository administrator enables and verifies
+the ruleset. No approval claim may treat them as enforced before that evidence
+is recorded.
 
 ## Approval record
 

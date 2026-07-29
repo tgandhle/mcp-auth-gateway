@@ -268,6 +268,13 @@ against, what it does not, and the preconditions its security depends on (most
 importantly, that the upstream is not reachable directly by clients). Each
 defense points at the code or CI that backs it.
 
+Repository approval is governed by the
+[approval policy](docs/APPROVAL-POLICY.md), with reproducible results in
+[current technical evidence](evidence/CURRENT.md). That evidence intentionally
+keeps target-environment checks and human decisions pending until they are
+actually performed. GitHub branch protection is also documented there as a
+target control and is not currently enforced server-side.
+
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md).
 
 ## License

@@ -49,7 +49,7 @@ _HOP_BY_HOP = {
 # are injected separately by the gateway.
 _FORWARDED_REQUEST_HEADERS = {
     "accept", "accept-language", "content-type", "mcp-protocol-version",
-    "mcp-session-id", "last-event-id", "traceparent", "tracestate", "baggage",
+    "mcp-session-id", "last-event-id", "traceparent", "tracestate",
 }
 
 

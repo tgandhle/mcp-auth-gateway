@@ -18,6 +18,11 @@ $python = if (Test-Path ".venv/Scripts/python.exe") {
 } else {
     "python"
 }
+$pythonDisplay = if ($python -ne "python" -and $python.StartsWith($repo, [StringComparison]::OrdinalIgnoreCase)) {
+    "." + $python.Substring($repo.Length)
+} else {
+    $python
+}
 
 function Invoke-Gate([string]$Name, [string[]]$Arguments) {
     $text = (& $python @Arguments 2>&1 | Out-String).Trim()
@@ -25,7 +30,7 @@ function Invoke-Gate([string]$Name, [string[]]$Arguments) {
     $summary = if ($text) { ($text -split "\r?\n" | Select-Object -Last 3) -join " / " } else { "no output" }
     [pscustomobject]@{
         Name = $Name
-        Command = "$python $($Arguments -join ' ')"
+        Command = "$pythonDisplay $($Arguments -join ' ')"
         ExitCode = $code
         Status = if ($code -eq 0) { "PASS" } else { "FAIL" }
         Summary = $summary.Replace("|", "\|")

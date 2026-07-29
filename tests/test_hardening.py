@@ -142,6 +142,8 @@ def test_unknown_client_headers_never_reach_upstream(monkeypatch, jwks, rsa_key)
             "Authorization": f"Bearer {token}",
             "Remote-User": "attacker",
             "X-Vendor-Identity": "attacker",
+            "Baggage": "tenant=attacker-controlled",
+            "Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
             "MCP-Protocol-Version": "2025-06-18",
         },
     )
@@ -149,6 +151,8 @@ def test_unknown_client_headers_never_reach_upstream(monkeypatch, jwks, rsa_key)
     sent = route.calls.last.request.headers
     assert "remote-user" not in sent
     assert "x-vendor-identity" not in sent
+    assert "baggage" not in sent
+    assert "traceparent" in sent
     assert sent["mcp-protocol-version"] == "2025-06-18"
 
 
