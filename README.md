@@ -93,6 +93,7 @@ All config is environment-driven (prefix `GATEWAY_`) or via a `.env` file.
 | `GATEWAY_PUBLIC_BASE_URL` | no | External URL (e.g. `https://mcp.example.com`) for metadata/`WWW-Authenticate` when behind TLS or a load balancer |
 | `GATEWAY_MAX_REQUEST_BYTES` | no | Reject bodies larger than this; default 5 MiB, `0` disables |
 | `GATEWAY_MAX_RESPONSE_BYTES` | no | Cap upstream response size; default 10 MiB, `0` disables. Over-cap `Content-Length` returns `413`; mid-stream overflow is truncated |
+| `GATEWAY_MAX_TOOLS_LIST_BYTES` | no | Decoded `tools/list` filtering cap; default 1 MiB. Must be positive and smaller than an enabled response cap |
 | `GATEWAY_CONNECT_TIMEOUT` / `_READ_TIMEOUT` / `_WRITE_TIMEOUT` / `_POOL_TIMEOUT` | no | Per-phase upstream timeouts; fall back to `GATEWAY_UPSTREAM_TIMEOUT` |
 
 ## Run
@@ -203,6 +204,9 @@ Behavior, when a tool policy is configured:
   malformed request, distinct from an authorization denial.
 - Matching is exact and case-sensitive: `read_file` and `Read_File` are
   different tools.
+- A successful JSON `tools/list` response is filtered with the same policy and
+  verified claims used by `tools/call`. Audit logs record returned/filtered
+  counts, not tool names.
 
 This layer is **opt-in and backward-compatible**. With `GATEWAY_TOOL_POLICY_FILE`
 unset, tool-call authorization is not applied and `tools/call` is governed by
@@ -214,6 +218,18 @@ lacking `mcp:invoke` is stopped with `insufficient_scope` before the tool
 allow-list is consulted. Every tool decision is written to the audit log with
 the `tool_name`, matching `tool_rule` (for allowed calls), and the decision,
 alongside the existing scope decision fields.
+
+Filtering discovery is information-disclosure hardening, not the authorization
+boundary: denied tools were already blocked at `tools/call`. The gateway
+buffers only successful JSON `tools/list` responses, bounded by
+`GATEWAY_MAX_TOOLS_LIST_BYTES`, and returns the rewritten response with
+`Cache-Control: no-store`. It fails closed with a distinct `502` if the body is
+oversized, malformed, unreadable, or not JSON. An HTTP-200 JSON-RPC error is
+declined with `tools_list_upstream_error` because its unconstrained `error.data`
+could contain entitlement detail; the distinct code and audit reason preserve
+the upstream-error diagnosis. Streamable HTTP clients must advertise both JSON
+and SSE, so a policy-enabled deployment must configure its upstream to return
+JSON; the gateway does not attempt to rewrite SSE frames.
 
 ## Tests
 
@@ -256,6 +272,10 @@ These are boundaries that repository code alone cannot close:
   deliberate backward-compatible default, not a defect; configure a tool policy
   to enforce per-tool least privilege. A policy without `rules` grants the same
   tool set to every caller; use claim-bound rules to vary access by identity.
+- **Filtered tool discovery requires JSON responses.** With a tool policy
+  configured, an upstream `text/event-stream` response to `tools/list` fails
+  closed with `502 tools_list_filter_unsupported_media_type`. Configure the
+  upstream's Streamable HTTP transport for JSON responses.
 - **Deployment validation remains required.** A real deployment still needs
   issuer/JWKS and CA validation, ingress TLS, load testing, alerting, audit-log
   retention, SLOs, and incident ownership. See

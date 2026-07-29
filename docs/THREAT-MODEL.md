@@ -122,6 +122,23 @@ a clean one; the initial "allowed" event alone cannot convey this. **Verify:**
 `src/mcp_gateway/app.py`; `src/mcp_gateway/audit.py`; `tests/test_app.py`
 (`test_oversized_content_length_rejected_413`, `test_midstream_cap_truncates`).
 
+### Enumeration of tools a caller cannot invoke
+A caller with discovery scope may receive names and schemas for tools that the
+configured tool policy would deny at `tools/call`. This is information
+disclosure, not an authorization bypass, because invocation remains blocked.
+**Defense:** when a tool policy is configured, successful JSON `tools/list`
+pages are buffered under the positive `GATEWAY_MAX_TOOLS_LIST_BYTES` decoded
+body cap and filtered with the identical `ToolPolicy.check` decision used for
+calls. Unfilterable, oversized, or SSE responses fail closed before response
+headers are sent. Filtered results are marked `Cache-Control: no-store`, and
+audit records counts rather than tool names. HTTP-200 JSON-RPC errors are
+declined with a distinct upstream-error code because `error.data` is
+unconstrained. The compatibility constraint is explicit: policy-enabled
+deployments must configure the upstream for JSON Streamable HTTP responses.
+**Verify:** `src/mcp_gateway/tools_list.py`;
+`src/mcp_gateway/app.py`; `tests/test_tools_list_filter.py`;
+`tests/test_tools_list_e2e.py`; `verification/run_e2e.ps1`.
+
 ### Misconfiguration that silently weakens enforcement
 An operator starting the gateway with a config that parses but is unsafe: auth
 enabled with no JWKS URL, a symmetric or `none` signing algorithm, an empty
