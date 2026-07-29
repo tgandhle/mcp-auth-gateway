@@ -26,6 +26,12 @@ jobs:
 
       - name: Collect technical evidence
         shell: pwsh
+        env:
+          # pull_request checks out refs/pull/N/merge. Pass the durable head
+          # commit separately so evidence never mistakes the ephemeral merge
+          # commit for the source revision under review.
+          EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVIDENCE_CHECKOUT_SHA: ${{ github.sha }}
         run: ./verification/collect_evidence.ps1 -OutputPath approval-evidence.md
 
       - name: Upload evidence

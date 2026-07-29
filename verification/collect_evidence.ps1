@@ -37,9 +37,36 @@ function Invoke-Gate([string]$Name, [string[]]$Arguments) {
     }
 }
 
-$commit = (git rev-parse HEAD).Trim()
-$branch = (git branch --show-current).Trim()
-$dirty = @((git status --porcelain))
+function Invoke-GitText([string[]]$Arguments) {
+    try {
+        $value = (& git @Arguments 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return $value
+    } catch {
+        return ""
+    }
+}
+
+$localHead = Invoke-GitText -Arguments @("rev-parse", "HEAD")
+$commit = if ($env:EVIDENCE_HEAD_SHA) { $env:EVIDENCE_HEAD_SHA.Trim() } else { $localHead }
+$checkoutCommit = if ($env:EVIDENCE_CHECKOUT_SHA) {
+    $env:EVIDENCE_CHECKOUT_SHA.Trim()
+} else {
+    $localHead
+}
+$branch = if ($env:GITHUB_HEAD_REF) {
+    $env:GITHUB_HEAD_REF.Trim()
+} elseif ($env:GITHUB_REF_NAME) {
+    $env:GITHUB_REF_NAME.Trim()
+} else {
+    Invoke-GitText -Arguments @("branch", "--show-current")
+}
+if (-not $branch) {
+    $branch = if ($commit) { "detached@$($commit.Substring(0, [Math]::Min(12, $commit.Length)))" } else { "unknown" }
+}
+if (-not $commit) { $commit = "unknown" }
+if (-not $checkoutCommit) { $checkoutCommit = "unknown" }
+$dirtyTextRaw = Invoke-GitText -Arguments @("status", "--porcelain")
 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $platform = [System.Environment]::OSVersion.VersionString
 $pythonVersion = (& $python --version 2>&1 | Out-String).Trim()
@@ -64,7 +91,11 @@ if ($RunE2E) {
 }
 
 $overall = if (($gates.Status -contains "FAIL") -or $e2eStatus -eq "FAIL") { "FAIL" } else { "PASS" }
-$dirtyText = if ($dirty.Count -eq 0) { "clean" } else { "dirty (collector/report changes may be present)" }
+$dirtyText = if ([string]::IsNullOrWhiteSpace($dirtyTextRaw)) {
+    "clean"
+} else {
+    "dirty (collector/report changes may be present)"
+}
 $rows = ($gates | ForEach-Object {
     "| $($_.Name) | $($_.Command) | $($_.Status) | $($_.ExitCode) | $($_.Summary) |"
 }) -join [Environment]::NewLine
@@ -78,7 +109,8 @@ $report = @"
 ## Provenance
 
 - Generated (UTC): $timestamp
-- Commit: $commit
+- Source/head commit: $commit
+- Checkout context: $checkoutCommit
 - Branch: $branch
 - Worktree: $dirtyText
 - Platform: $platform

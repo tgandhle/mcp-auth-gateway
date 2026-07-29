@@ -46,19 +46,20 @@ For `main`, enable branch protection or a ruleset requiring:
 - at least one approving review;
 - review from Code Owners;
 - dismissal of stale approvals after new commits;
-- successful `ci / quality`, `ci / audit`, and `trust-boundary` checks;
+- successful required checks `quality`, `audit`, and `collect`; deploy changes
+  must also pass the path-triggered `trust-boundary` workflow;
 - conversation resolution;
 - no force pushes or branch deletion.
 
 These server-side settings must be confirmed in GitHub; committing a
 `CODEOWNERS` file does not enable them by itself.
 
-**Current enforcement status (verified 2026-07-28): NOT ENABLED.** GitHub
-reported `main` as unprotected, and the approval-framework commits were pushed
-directly rather than merged through pull requests. The controls above are
-documented target state until a repository administrator enables and verifies
-the ruleset. No approval claim may treat them as enforced before that evidence
-is recorded.
+**Current enforcement status (verified 2026-07-29): ENABLED.** GitHub API
+readback confirmed strict required checks (`quality`, `audit`, `collect`), one
+approving review, Code Owner review, stale-review dismissal, last-push approval,
+administrator enforcement, linear history, conversation resolution, and
+disabled force pushes and branch deletion. See
+[`evidence/BRANCH-PROTECTION-2026-07-29.md`](../evidence/BRANCH-PROTECTION-2026-07-29.md).
 
 ## Approval record
 
