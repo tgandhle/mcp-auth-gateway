@@ -54,7 +54,7 @@ Command:
 | Required approving reviews | 0 |
 | Code Owner review | Disabled |
 | Dismiss stale reviews | Enabled |
-| Approval required after last push | Enabled |
+| Approval required after last push | Disabled |
 | Enforce for administrators | Enabled |
 | Linear history | Enabled |
 | Conversation resolution | Enabled |

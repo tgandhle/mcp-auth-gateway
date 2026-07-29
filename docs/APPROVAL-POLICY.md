@@ -59,8 +59,8 @@ These server-side settings must be confirmed in GitHub; committing a
 **Current enforcement status (verified 2026-07-29): ENABLED.** GitHub API
 readback confirmed strict required checks (`quality`, `audit`, `collect`), zero
 required approving reviews, no required Code Owner review, stale-review
-dismissal, last-push approval, administrator enforcement, linear history,
-conversation resolution, and disabled force pushes and branch deletion. See
+dismissal, no last-push approval requirement, administrator enforcement, linear
+history, conversation resolution, and disabled force pushes and branch deletion. See
 [`evidence/BRANCH-PROTECTION-2026-07-29.md`](../evidence/BRANCH-PROTECTION-2026-07-29.md).
 
 Evidence records are append-only. When a published claim is found to be
