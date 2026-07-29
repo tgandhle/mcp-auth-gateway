@@ -10,7 +10,7 @@ standard.
 |---|---|---|
 | Service owner | Accepts service lifecycle, roadmap, and rollback responsibility | `@tgandhle` |
 | Code owner | Reviews changes to enforcement and release controls | `@tgandhle` |
-| Security approver | Reviews the threat model, evidence, and residual risk | Pending organizational assignment |
+| Security approver | Reviews the threat model, evidence, and residual risk | `@shumba-ux` |
 | Platform approver | Confirms cluster, network, ingress, certificates, and observability | Pending organizational assignment |
 | Operations owner | Owns SLOs, alerts, on-call response, and audit retention | Pending organizational assignment |
 
