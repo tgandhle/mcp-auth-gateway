@@ -10,9 +10,13 @@ standard.
 |---|---|---|
 | Service owner | Accepts service lifecycle, roadmap, and rollback responsibility | `@tgandhle` |
 | Code owner | Reviews changes to enforcement and release controls | `@tgandhle` |
-| Security approver | Reviews the threat model, evidence, and residual risk | `@shumba-ux` |
+| Security approver | Reviews the threat model, evidence, and residual risk | Pending organizational assignment |
 | Platform approver | Confirms cluster, network, ingress, certificates, and observability | Pending organizational assignment |
 | Operations owner | Owns SLOs, alerts, on-call response, and audit retention | Pending organizational assignment |
+
+No independent human approver exists for this repository. The approval gates
+below are documented target state for a deployment; repository CI and branch
+protection provide mechanical enforcement only.
 
 One person may fill multiple roles only when organizational policy permits it.
 Automated checks and AI assistants produce evidence but cannot grant human
@@ -43,8 +47,6 @@ Repository CI success alone is always `PENDING` for a production environment.
 For `main`, enable branch protection or a ruleset requiring:
 
 - pull requests rather than direct pushes;
-- at least one approving review;
-- review from Code Owners;
 - dismissal of stale approvals after new commits;
 - successful required checks `quality`, `audit`, and `collect`; deploy changes
   must also pass the path-triggered `trust-boundary` workflow;
@@ -55,11 +57,15 @@ These server-side settings must be confirmed in GitHub; committing a
 `CODEOWNERS` file does not enable them by itself.
 
 **Current enforcement status (verified 2026-07-29): ENABLED.** GitHub API
-readback confirmed strict required checks (`quality`, `audit`, `collect`), one
-approving review, Code Owner review, stale-review dismissal, last-push approval,
-administrator enforcement, linear history, conversation resolution, and
-disabled force pushes and branch deletion. See
+readback confirmed strict required checks (`quality`, `audit`, `collect`), zero
+required approving reviews, no required Code Owner review, stale-review
+dismissal, last-push approval, administrator enforcement, linear history,
+conversation resolution, and disabled force pushes and branch deletion. See
 [`evidence/BRANCH-PROTECTION-2026-07-29.md`](../evidence/BRANCH-PROTECTION-2026-07-29.md).
+
+Evidence records are append-only. When a published claim is found to be
+incorrect, withdraw it with a dated amendment in the same record rather than
+deleting or rewriting the original claim.
 
 ## Approval record
 
