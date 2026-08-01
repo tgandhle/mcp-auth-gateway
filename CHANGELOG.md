@@ -6,6 +6,12 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-01
+
+Claim-aware discovery hardening release. Tool listings now expose only tools
+the same caller can invoke, with bounded buffering, fail-closed parsing, safe
+response headers, and explicit JSON-only compatibility behavior.
+
 ### Security
 
 - Policy-enabled `tools/list` responses are filtered with the same claim-aware
