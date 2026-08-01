@@ -184,7 +184,7 @@ def create_app(
         finally:
             await client.aclose()
 
-    app = FastAPI(title="MCP Auth Gateway", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="MCP Auth Gateway", version="0.4.0", lifespan=lifespan)
 
     @app.get("/livez")
     @app.get("/healthz", include_in_schema=False)
