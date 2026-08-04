@@ -159,6 +159,17 @@ remains independent for process restart decisions. **Verify:**
 `src/mcp_gateway/config.py`; `src/mcp_gateway/verifier.py`;
 `tests/test_config.py`; `tests/test_verifier_concurrency.py`.
 
+### Empty JWKS revocation versus availability
+An authorization server can revoke every signing key by returning a successful,
+well-formed JWKS with no usable `kid` keys. **Defense:** the gateway treats that
+response as authoritative, evicts its cached keys, rejects tokens signed by the
+removed keys, and reports not-ready. Transport failures and malformed or
+truncated responses preserve stale keys because they do not prove that the
+authorization server issued a revocation decision. This deliberately permits an
+attacker or misconfiguration capable of serving a valid empty JWKS to make the
+gateway unavailable in exchange for correct revocation. **Verify:**
+`src/mcp_gateway/verifier.py`; `tests/test_verifier_concurrency.py`.
+
 ### Audit correlation integrity
 A caller setting its own `X-Request-Id` to pollute, collide with, or forge the
 audit correlation id, or to have a client-chosen id forwarded upstream as though

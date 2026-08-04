@@ -142,6 +142,79 @@ def test_fetch_failure_is_token_error_and_starts_cooldown(monkeypatch, jwks, rsa
     assert attempts == 1
 
 
+def test_empty_jwks_evicts_stale_signing_key(monkeypatch, jwks, rsa_key):
+    """A successfully retrieved empty key set is authoritative revocation."""
+    v = make_verifier(cache_ttl=60, min_refresh_interval=30.0)
+    served = [jwks]
+    monkeypatch.setattr(v, "_fetch_jwks", lambda: served[-1])
+    token = mint(rsa_key)
+
+    assert v.verify(token).subject == "user-123"
+    served.append({"keys": []})
+    v._last_fetch -= 61.0
+
+    with pytest.raises(TokenError):
+        v.verify(token)
+    with pytest.raises(TokenError, match="no matching signing key"):
+        v.verify(token)
+
+
+def test_retrieval_outage_preserves_stale_signing_key(monkeypatch, jwks, rsa_key):
+    """A transport failure rejects its trigger but does not revoke cached keys."""
+    v = make_verifier(cache_ttl=60, min_refresh_interval=30.0)
+    attempts = 0
+
+    def fetch():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return jwks
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(v, "_fetch_jwks", fetch)
+    token = mint(rsa_key)
+
+    assert v.verify(token).subject == "user-123"
+    v._last_fetch -= 61.0
+    with pytest.raises(TokenError, match="JWKS retrieval failed: OSError"):
+        v.verify(token)
+    assert v.verify(token).subject == "user-123"
+    assert attempts == 2
+
+
+def test_malformed_jwks_preserves_stale_signing_key(monkeypatch, jwks, rsa_key):
+    """A malformed response is path failure, not an authoritative revocation."""
+    v = make_verifier(cache_ttl=60, min_refresh_interval=30.0)
+    served: list[dict | bytes] = [jwks]
+    monkeypatch.setattr(v, "_fetch_jwks", lambda: served[-1])
+    token = mint(rsa_key)
+
+    assert v.verify(token).subject == "user-123"
+    served.append(b"<html>upstream error</html>")
+    v._last_fetch -= 61.0
+
+    with pytest.raises(TokenError, match="JWKS retrieval failed: JSONDecodeError"):
+        v.verify(token)
+    assert v.verify(token).subject == "user-123"
+
+
+def test_empty_jwks_makes_verifier_not_ready(monkeypatch, jwks, rsa_key):
+    """Authoritative key removal rejects old tokens and fails readiness."""
+    v = make_verifier(cache_ttl=60, min_refresh_interval=30.0)
+    served = [jwks]
+    monkeypatch.setattr(v, "_fetch_jwks", lambda: served[-1])
+    token = mint(rsa_key)
+
+    assert v.ready()
+    served.append({"keys": []})
+    v._last_success -= 61.0
+    v._last_fetch -= 61.0
+
+    assert not v.ready()
+    with pytest.raises(TokenError, match="no matching signing key"):
+        v.verify(token)
+
+
 def test_readiness_primes_cache_and_contains_fetch_failure(monkeypatch, jwks):
     ready = make_verifier()
     monkeypatch.setattr(ready, "_fetch_jwks", lambda: jwks)

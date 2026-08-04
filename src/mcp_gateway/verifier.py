@@ -138,23 +138,29 @@ class JwksVerifier:
         new_keys: dict[str, PyJWK] | None = None
         try:
             raw = self._fetch_jwks()
-            keyset = PyJWKSet.from_dict(raw)
-            new_keys = {k.key_id: k for k in keyset.keys if k.key_id}
         except Exception:
             new_keys = None
+        else:
+            try:
+                new_keys = self._parse_jwks(raw)
+            except Exception:
+                # A broken document is not proof that the authorization server
+                # intentionally revoked its keys. Preserve the stale cache.
+                new_keys = None
         finally:
             with self._lock:
                 now = time.monotonic()
                 self._refreshing = False
                 self._last_fetch = now
-                if new_keys:
+                if new_keys is not None:
                     self._keys = new_keys
-                    self._last_success = now
+                    if new_keys:
+                        self._last_success = now
                 self._refresh_done.notify_all()
         return bool(new_keys)
 
-    def _fetch_jwks(self) -> dict:
-        """Fetch and return the raw JWKS document. The single network seam.
+    def _fetch_jwks(self) -> bytes:
+        """Fetch and return the raw JWKS response body. The single network seam.
 
         Overridden in tests to serve an in-memory JWKS and to count fetches.
         Kept deliberately small so the fetch is the only thing that touches the
@@ -167,7 +173,16 @@ class JwksVerifier:
             raise TokenError(f"refusing non-http(s) JWKS URL scheme: {self._jwks_url!r}")
         req = urllib.request.Request(self._jwks_url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:  # nosec B310
-            return json.loads(resp.read())
+            return resp.read()
+
+    @staticmethod
+    def _parse_jwks(raw: dict | bytes | str) -> dict[str, PyJWK]:
+        """Parse a retrieved JWKS body into the owned key cache."""
+        document = json.loads(raw) if isinstance(raw, (bytes, str)) else raw
+        if isinstance(document, dict) and document.get("keys") == []:
+            return {}
+        keyset = PyJWKSet.from_dict(document)
+        return {key.key_id: key for key in keyset.keys if key.key_id}
 
     def _resolve_key(self, kid: str) -> PyJWK:
         """Return the signing key for ``kid``, refreshing at most once per
@@ -227,12 +242,18 @@ class JwksVerifier:
         error: TokenError | None = None
         try:
             raw = self._fetch_jwks()
-            keyset = PyJWKSet.from_dict(raw)
-            new_keys = {k.key_id: k for k in keyset.keys if k.key_id}
         except TokenError as exc:
             error = exc
-        except Exception as exc:  # URLError, timeout, bad JSON, bad JWKS shape
+        except Exception as exc:  # URLError, timeout, connection/read failure
             error = TokenError(f"JWKS retrieval failed: {type(exc).__name__}")
+        else:
+            try:
+                new_keys = self._parse_jwks(raw)
+            except Exception as exc:  # malformed/truncated response: preserve stale keys
+                error = TokenError(f"JWKS retrieval failed: {type(exc).__name__}")
+            else:
+                if not new_keys:
+                    error = TokenError("JWKS contained no usable signing keys")
         finally:
             with self._lock:
                 self._refreshing = False
