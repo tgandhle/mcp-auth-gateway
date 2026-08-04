@@ -260,7 +260,8 @@ class JwksVerifier:
                 self._last_fetch = time.monotonic()
                 if new_keys is not None:
                     self._keys = new_keys
-                    self._last_success = self._last_fetch
+                    if new_keys:
+                        self._last_success = self._last_fetch
                 self._refresh_done.notify_all()
 
         if error is not None:

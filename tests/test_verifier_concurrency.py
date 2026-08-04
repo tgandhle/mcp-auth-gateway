@@ -150,11 +150,13 @@ def test_empty_jwks_evicts_stale_signing_key(monkeypatch, jwks, rsa_key):
     token = mint(rsa_key)
 
     assert v.verify(token).subject == "user-123"
+    last_success = v._last_success
     served.append({"keys": []})
     v._last_fetch -= 61.0
 
     with pytest.raises(TokenError):
         v.verify(token)
+    assert v._last_success == last_success
     with pytest.raises(TokenError, match="no matching signing key"):
         v.verify(token)
 
