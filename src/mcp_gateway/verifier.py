@@ -53,18 +53,71 @@ class VerifiedToken:
     scopes: frozenset[str]
     claims: dict[str, Any]
 
+# RFC 6749 section 3.3: scope-token = 1*( %x21 / %x23-5B / %x5D-7E ). That is,
+# one or more printable ASCII characters excluding space (%x20), double-quote
+# (%x22), and backslash (%x5C). We enforce this per token so that a scope can
+# never contain a space, a control character, or a non-ASCII byte. This matters
+# beyond hygiene: the gateway forwards scopes to the upstream as a single
+# space-delimited X-Forwarded-Scopes header. If a single scp array element were
+# "admin super", the gateway would authorize it as one opaque scope while the
+# upstream re-splitting the header would see two ("admin", "super") -- a
+# privilege the gateway never granted. Rejecting spaces in a scope token closes
+# that internal-vs-wire divergence at the source.
+_SCOPE_TOKEN_OK = frozenset(
+    chr(c) for c in range(0x21, 0x7F) if c not in (0x22, 0x5C)  # exclude " and \
+)
+
+
+def _valid_scope_token(tok: str) -> bool:
+    return bool(tok) and all(ch in _SCOPE_TOKEN_OK for ch in tok)
+
+
+class ScopeClaimError(Exception):
+    """A scope/scp claim contained a token that is not a valid RFC 6749
+    scope-token. Raised so verification fails closed rather than forwarding a
+    scope that would re-split or corrupt the X-Forwarded-Scopes header."""
+
+
 def _parse_scopes(claims: dict[str, Any]) -> frozenset[str]:
-    """Extract scopes from either the ``scope`` (space-delimited string,
-    RFC 8693 / OAuth) or ``scp`` (array, common with Entra) claim."""
+    """Extract and validate scopes from the ``scope`` (space-delimited string,
+    RFC 8693 / OAuth) or ``scp`` (array, common with Entra) claim.
+
+    Every resulting scope token is validated against the RFC 6749 scope-token
+    grammar. A malformed token raises ``ScopeClaimError`` so the request is
+    rejected; we never silently drop or coerce a scope, because either behavior
+    changes the caller's effective authorization.
+    """
     raw = claims.get("scope")
-    if isinstance(raw, str):
-        return frozenset(s for s in raw.split() if s)
     scp = claims.get("scp")
-    if isinstance(scp, str):
-        return frozenset(s for s in scp.split() if s)
-    if isinstance(scp, list):
-        return frozenset(str(s) for s in scp)
-    return frozenset()
+    tokens: list[str]
+    if isinstance(raw, str):
+        # A space-delimited string: split IS the grammar, so empties are just
+        # separators and are dropped, but each non-empty token must still be
+        # valid (catches embedded controls / non-ASCII).
+        tokens = [t for t in raw.split(" ") if t]
+    elif isinstance(scp, str):
+        tokens = [t for t in scp.split(" ") if t]
+    elif isinstance(scp, list):
+        # An array: each element is claimed to be exactly one scope. An element
+        # that is not a string, or that contains a space/control/non-ASCII, is
+        # malformed -- do not str()-coerce it into a fake single scope.
+        tokens = []
+        for el in scp:
+            if not isinstance(el, str):
+                raise ScopeClaimError("scope claim contains an invalid token")
+            tokens.append(el)
+    else:
+        return frozenset()
+
+    for t in tokens:
+        if not _valid_scope_token(t):
+            # Deliberately generic: the rejected token value is NOT included.
+            # This message flows into the audit ``reason`` field (app.py), and
+            # audit reasons must not carry claim values (see audit.py). Embedding
+            # the token would leak a possibly-sensitive scope string into
+            # warning-level logs.
+            raise ScopeClaimError("scope claim contains an invalid token")
+    return frozenset(tokens)
 
 
 class JwksVerifier:
@@ -316,9 +369,32 @@ class JwksVerifier:
         subject = str(claims.get("sub", ""))
         if not subject:
             raise TokenError("token missing sub claim")
+        # The gateway forwards this verbatim in the X-Forwarded-Sub request
+        # header. HTTP field values are a restricted grammar; httpx encodes
+        # headers as ASCII and raises UnicodeEncodeError on a non-ASCII value
+        # (a valid JWT sub such as "café"), and h11 raises
+        # LocalProtocolError on a value with leading/trailing whitespace. We
+        # therefore require sub to be printable ASCII, contain no control
+        # characters, and have no surrounding whitespace. We reject rather than
+        # encode: base64-ing the subject would silently change the identity the
+        # upstream sees, defeating the point of forwarding a verified identity.
+        if (
+            not subject.isascii()
+            or subject != subject.strip()
+            or any(ord(c) < 0x20 or ord(c) == 0x7F for c in subject)
+        ):
+            raise TokenError(
+                "sub claim must be printable ASCII with no control or surrounding "
+                "whitespace characters"
+            )
+
+        try:
+            scopes = _parse_scopes(claims)
+        except ScopeClaimError as exc:
+            raise TokenError(str(exc)) from exc
 
         return VerifiedToken(
             subject=subject,
-            scopes=_parse_scopes(claims),
+            scopes=scopes,
             claims=claims,
         )

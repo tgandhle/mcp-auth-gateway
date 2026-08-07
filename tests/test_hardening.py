@@ -219,3 +219,116 @@ def test_unauthorized_uses_public_base_url(monkeypatch, jwks):
     r = c.post("/mcp", content=_rpc("tools/list"))
     assert r.status_code == 401
     assert "https://mcp.example.com/.well-known/oauth-protected-resource" in r.headers["www-authenticate"]
+
+
+# --- Forwarded-identity header safety (review round 2) ---
+
+@respx.mock
+def test_non_ascii_sub_rejected_before_upstream(monkeypatch, jwks, rsa_key):
+    """A valid but non-ASCII JWT sub yields a clean 401, never a 500 from a
+    UnicodeEncodeError building X-Forwarded-Sub, and never calls upstream."""
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read", sub="caf\u00e9-user")
+    r = client.post("/mcp", content=_rpc("tools/list"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+    assert not route.called
+
+
+@respx.mock
+def test_surrounding_whitespace_sub_rejected_before_upstream(monkeypatch, jwks, rsa_key):
+    """A sub with leading/trailing whitespace is rejected at verification (401),
+    so it can never reach h11 (which rejects such a field value) and 502."""
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read", sub=" user ")
+    r = client.post("/mcp", content=_rpc("tools/list"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+    assert not route.called
+
+
+@respx.mock
+def test_crlf_sub_rejected_before_upstream(monkeypatch, jwks, rsa_key):
+    """A sub with CR/LF (header-injection attempt) is rejected cleanly."""
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read", sub="evil\r\nX-Injected: 1")
+    r = client.post("/mcp", content=_rpc("tools/list"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+    assert not route.called
+
+
+@respx.mock
+def test_scope_with_embedded_space_rejected_before_upstream(monkeypatch, jwks, rsa_key):
+    """An scp array element containing a space ("admin super") is rejected at
+    verification, so it can never reach the upstream as two forwarded scopes the
+    gateway did not authorize.
+
+    The token is built without a "scope" string so the scp array is the claim
+    actually parsed (_parse_scopes prefers "scope" when present).
+    """
+    import time as _time
+
+    import jwt as _jwt
+
+    from conftest import AUDIENCE, ISSUER, KID
+
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    now = int(_time.time())
+    token = _jwt.encode(
+        {
+            "iss": ISSUER, "aud": AUDIENCE, "sub": "user-123",
+            "iat": now, "exp": now + 300,
+            "scp": ["mcp:read", "admin super"],  # embedded space in one element
+        },
+        rsa_key, algorithm="RS256", headers={"kid": KID},
+    )
+    r = client.post("/mcp", content=_rpc("tools/list"), headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+    assert not route.called
+
+
+@respx.mock
+def test_traversal_method_rejected_before_upstream(monkeypatch, jwks, rsa_key):
+    """A method with a '..' segment is a 400 and never forwarded."""
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    token = mint(rsa_key, scope="mcp:read")
+    r = client.post("/mcp", content=_rpc("resources/../tools/call"),
+                    headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 400
+    assert not route.called
+
+
+@respx.mock
+def test_invalid_scope_value_absent_from_logs(monkeypatch, jwks, rsa_key, caplog):
+    """The rejected scope token value must never reach the audit log. The
+    request is rejected, but the specific (possibly sensitive) scope string the
+    caller supplied must not appear in any log record."""
+    import time as _time
+
+    import jwt as _jwt
+
+    from conftest import AUDIENCE, ISSUER, KID
+
+    route = respx.post(UPSTREAM).mock(return_value=httpx.Response(200, json={}))
+    client = _client(monkeypatch, jwks)
+    now = int(_time.time())
+    sentinel = "SENSITIVE_SCOPE admin"
+    token = _jwt.encode(
+        {
+            "iss": ISSUER, "aud": AUDIENCE, "sub": "user-123",
+            "iat": now, "exp": now + 300,
+            "scp": ["mcp:read", sentinel],
+        },
+        rsa_key, algorithm="RS256", headers={"kid": KID},
+    )
+    with caplog.at_level(logging.DEBUG):
+        r = client.post("/mcp", content=_rpc("tools/list"),
+                        headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+    assert not route.called
+    assert sentinel not in caplog.text
+    # The word "SENSITIVE" alone should also not leak from the token value.
+    assert "SENSITIVE" not in caplog.text
