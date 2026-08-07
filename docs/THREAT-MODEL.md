@@ -252,5 +252,16 @@ These are acknowledged, not yet implemented:
   implemented; see the JWKS-refresh amplification defense above.)
 - mTLS between gateway and upstream for deployments stronger than network-
   position trust.
+- **Method canonicalization (partial).** The scope policy resolves rules by
+  "/"-delimited prefix. The parser rejects methods whose literal segments
+  include "", ".", or ".." (e.g. `resources/../tools/call`), which would
+  otherwise prefix-match a weaker rule while a path-normalizing upstream could
+  dispatch them elsewhere. This does **not** cover percent-encoded forms such as
+  `resources/%2e%2e/tools/call`: those still prefix-match `resources/` and are
+  authorized with the weaker scope, and an upstream that percent-decodes the
+  method could reach a stronger-scoped handler. Encoded-form defense is not
+  attempted because it depends on upstream decoding the gateway cannot observe.
+  The robust fix is exact-match authorization or a fully specified canonical
+  method grammar; the literal-segment guard is deliberately partial hardening.
 
 If you find an issue not covered here, see `SECURITY.md` for how to report it.

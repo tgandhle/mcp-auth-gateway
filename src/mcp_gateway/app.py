@@ -369,6 +369,11 @@ def create_app(
         }
         fwd_headers["X-Request-Id"] = audit.record.request_id
         if verified is not None:
+            # Both values are validated header-safe at verification time: sub is
+            # printable ASCII with no control or surrounding whitespace, and
+            # every scope is an RFC 6749 scope-token (no space/control/non-ASCII),
+            # so the space-join is unambiguous and re-splits upstream to exactly
+            # the scopes the gateway authorized.
             fwd_headers["X-Forwarded-Sub"] = verified.subject
             fwd_headers["X-Forwarded-Scopes"] = " ".join(sorted(verified.scopes))
 
@@ -642,6 +647,31 @@ def _parse_jsonrpc(raw: bytes) -> JsonRpcParse:
         return JsonRpcParse(
             error=f"'method' exceeds maximum length of {_MAX_IDENTIFIER_LEN}",
             error_code="identifier_too_long",
+        )
+    # Gateway canonicalization rule (NOT a JSON-RPC or MCP validity rule: both
+    # permit an arbitrary string method). The scope policy resolves rules by
+    # "/"-delimited prefix, so "resources/" grants mcp:read to "resources/*". A
+    # method whose "/"-split segments include "", ".", or ".." is
+    # normalization-sensitive: "resources/../tools/call" prefix-matches the
+    # weaker "resources/" rule while an upstream that path-normalizes could
+    # dispatch it as "tools/call". Rejecting those segments keeps the string the
+    # gateway authorizes and the string the upstream receives from diverging
+    # under path normalization.
+    #
+    # SCOPE LIMIT: this covers only LITERAL "/"-delimited "." / ".." / empty
+    # segments. It does NOT cover percent-encoded forms like
+    # "resources/%2e%2e/tools/call", which still prefix-match "resources/" and
+    # are authorized with mcp:read; an upstream that percent-decodes the method
+    # could reach a stronger-scoped handler. Encoded-form defense is not
+    # attempted here because it depends on upstream decoding the gateway cannot
+    # observe. The robust fix for that class is exact-match authorization or a
+    # fully specified canonical method grammar. See the "Method canonicalization"
+    # limitation in docs/THREAT-MODEL.md. This guard is documented as partial,
+    # gateway-specific hardening of the literal case only.
+    if any(seg in ("", ".", "..") for seg in method.split("/")):
+        return JsonRpcParse(
+            error="method name contains an empty or relative path segment",
+            error_code="invalid_jsonrpc",
         )
     # Canonical serialization of the validated object. Forwarding this (not the
     # original bytes) is what closes the parser differential: the upstream can
