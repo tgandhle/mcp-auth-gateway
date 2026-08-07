@@ -6,6 +6,31 @@ follow semantic versioning once a tagged release is cut.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-07
+
+Security hardening release covering authoritative empty-JWKS revocation,
+dependency remediation, forwarded-identity header safety, and partial JSON-RPC
+method canonicalization.
+
+### Security
+
+- A successful, well-formed JWKS with no usable `kid` keys now authoritatively
+  evicts cached signing keys and makes readiness fail, so removing every key
+  revokes tokens signed by the old set. Transport failures and malformed or
+  truncated responses still preserve stale keys because they do not prove a
+  revocation decision. (#30)
+- `sub`, `scope`, and `scp` claims are validated before they are forwarded in
+  HTTP headers. Subjects must be printable ASCII without controls or surrounding
+  whitespace, and every scope must satisfy the RFC 6749 scope-token grammar.
+  Malformed values fail authentication before any upstream request, and rejected
+  scope values are not copied into audit logs. (#32)
+- JSON-RPC methods containing literal empty, `.` or `..` path segments are
+  rejected before prefix-based scope authorization and proxying. This is partial
+  canonicalization hardening: percent-encoded segments remain a documented risk
+  when an upstream percent-decodes method names. (#32)
+- `cryptography` is raised to 50.0.0, resolving CVE-2026-69247 reported against
+  the previously locked 49.0.0 dependency. (#31)
+
 ## [0.4.0] - 2026-08-01
 
 Claim-aware discovery hardening release. Tool listings now expose only tools
